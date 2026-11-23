@@ -1,0 +1,427 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Authorized page administrator record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 150
+        },
+        "addedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "addedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private client profile visible only to the client and admins.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 150
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "photoURL", "createdAt", "lastSeenAt"]
+    },
+    "ChatThread": {
+      "title": "ChatThread",
+      "description": "Private 1-to-1 Messenger thread between a client and the page admin.",
+      "type": "object",
+      "properties": {
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "clientEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 150
+        },
+        "clientPhotoURL": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "lastMessageText": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "lastMessageSender": {
+          "type": "string",
+          "enum": ["client", "admin", "system"]
+        },
+        "lastMessageAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "unreadByAdmin": {
+          "type": "integer"
+        },
+        "unreadByClient": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "resolved"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "clientId",
+        "clientName",
+        "clientEmail",
+        "clientPhotoURL",
+        "lastMessageText",
+        "lastMessageSender",
+        "lastMessageAt",
+        "unreadByAdmin",
+        "unreadByClient",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual real-time text, video, or audio message inside a client-admin private thread.",
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["client", "admin", "system"]
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "messageType": {
+          "type": "string",
+          "enum": ["text", "image", "video", "audio"]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "mediaUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "mediaMimeType": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "threadId",
+        "senderId",
+        "senderRole",
+        "senderName",
+        "messageType",
+        "text",
+        "mediaUrl",
+        "mediaMimeType",
+        "createdAt"
+      ]
+    },
+    "BroadcastMessage": {
+      "title": "BroadcastMessage",
+      "description": "One-to-many admin broadcast delivered in real time to all connected clients.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "category": {
+          "type": "string",
+          "enum": ["announcement", "update", "offer", "urgent"]
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["title", "text", "category", "authorId", "authorName", "createdAt", "updatedAt"]
+    },
+    "PublicPageSettings": {
+      "title": "PublicPageSettings",
+      "description": "Public page display name, admin avatar, welcome greeting, and offline retention auto-reply.",
+      "type": "object",
+      "properties": {
+        "pageName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "tagline": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "welcomePopupTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "welcomePopupSubtitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "greetingMessage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "offlineAutoReply": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "adminAvatarURL": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        }
+      },
+      "required": [
+        "pageName",
+        "tagline",
+        "welcomePopupTitle",
+        "welcomePopupSubtitle",
+        "greetingMessage",
+        "offlineAutoReply",
+        "adminAvatarURL",
+        "updatedAt",
+        "updatedBy"
+      ]
+    },
+    "AdminPresence": {
+      "title": "AdminPresence",
+      "description": "Live online/offline active status for the page administrator.",
+      "type": "object",
+      "properties": {
+        "isOnline": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["auto", "online", "offline"]
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        }
+      },
+      "required": ["isOnline", "mode", "lastSeenAt", "updatedBy"]
+    },
+    "SponsoredLinksConfig": {
+      "title": "SponsoredLinksConfig",
+      "description": "Admin-managed rotating sponsored link pool and message interval configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "messagesBeforeLink": {
+          "type": "integer"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 300,
+            "pattern": "^https://.*"
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        }
+      },
+      "required": ["enabled", "messagesBeforeLink", "links", "updatedAt", "updatedBy"]
+    },
+    "UserLinkState": {
+      "title": "UserLinkState",
+      "description": "Per-client message cycle counter and admin-reviewed priority first link.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "messagesSinceLink": {
+          "type": "integer"
+        },
+        "cycleCount": {
+          "type": "integer"
+        },
+        "assignedFirstLink": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "lastClickedLink": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "messagesSinceLink",
+        "cycleCount",
+        "assignedFirstLink",
+        "lastClickedLink",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Admin allowlist records."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Isolated client profiles (PII protected)."
+    },
+    "/threads/{threadId}": {
+      "schema": { "$ref": "#/entities/ChatThread" },
+      "description": "Private 1-to-1 client-admin conversation headers keyed by client UID."
+    },
+    "/threads/{threadId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Private real-time text, video, and audio messages inside a client thread."
+    },
+    "/broadcasts/{broadcastId}": {
+      "schema": { "$ref": "#/entities/BroadcastMessage" },
+      "description": "Admin broadcast messages visible to all authenticated clients."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PublicPageSettings" },
+      "description": "Page configuration documents ('public' and 'links')."
+    },
+    "/presence/{presenceId}": {
+      "schema": { "$ref": "#/entities/AdminPresence" },
+      "description": "Live admin active status (only 'admin' document)."
+    },
+    "/linkStates/{userId}": {
+      "schema": { "$ref": "#/entities/UserLinkState" },
+      "description": "Per-user sponsored link cycle tracking and admin-assigned starting link."
+    }
+  }
+}

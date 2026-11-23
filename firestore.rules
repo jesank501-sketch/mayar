@@ -1,0 +1,460 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // Global Hardened Helpers
+    // ------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidAvatarUrl(url) {
+      return url is string && url.size() <= 65536 && (
+        url == ''
+        || url.matches('^https://.*')
+        || url.matches('^/src/assets/.*')
+        || url.matches('^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$')
+      );
+    }
+
+    function isValidMediaUrl(url) {
+      return url is string && url.size() <= 1000 && (
+        url == ''
+        || url.matches('^https://.*')
+        || url.matches('^/api/media/[a-zA-Z0-9_\\-]+/[a-zA-Z0-9_\\-]+\\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif)$')
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'jesank501@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // ------------------------------------------------------------------
+    // Entity Validation Blueprints (Anti-Update-Gap)
+    // ------------------------------------------------------------------
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'addedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'addedAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 150
+        && data.addedAt is timestamp;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'createdAt', 'lastSeenAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'createdAt', 'lastSeenAt'])
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 150
+        && isValidAvatarUrl(data.photoURL)
+        && data.createdAt is timestamp
+        && data.lastSeenAt is timestamp;
+    }
+
+    function isValidChatThread(data) {
+      return data.keys().hasAll([
+          'clientId', 'clientName', 'clientEmail', 'clientPhotoURL',
+          'lastMessageText', 'lastMessageSender', 'lastMessageAt',
+          'unreadByAdmin', 'unreadByClient', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'clientId', 'clientName', 'clientEmail', 'clientPhotoURL',
+          'lastMessageText', 'lastMessageSender', 'lastMessageAt',
+          'unreadByAdmin', 'unreadByClient', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.clientId)
+        && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 100
+        && data.clientEmail is string && data.clientEmail.size() >= 3 && data.clientEmail.size() <= 150
+        && isValidAvatarUrl(data.clientPhotoURL)
+        && data.lastMessageText is string && data.lastMessageText.size() <= 500
+        && data.lastMessageSender in ['client', 'admin', 'system']
+        && data.lastMessageAt is timestamp
+        && data.unreadByAdmin is int && data.unreadByAdmin >= 0 && data.unreadByAdmin <= 10000
+        && data.unreadByClient is int && data.unreadByClient >= 0 && data.unreadByClient <= 10000
+        && data.status in ['open', 'resolved']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll([
+          'threadId', 'senderId', 'senderRole', 'senderName',
+          'messageType', 'text', 'mediaUrl', 'mediaMimeType', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'threadId', 'senderId', 'senderRole', 'senderName',
+          'messageType', 'text', 'mediaUrl', 'mediaMimeType', 'createdAt'
+        ])
+        && isValidId(data.threadId)
+        && isValidId(data.senderId)
+        && data.senderRole in ['client', 'admin', 'system']
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 100
+        && data.messageType in ['text', 'image', 'video', 'audio']
+        && data.text is string && data.text.size() <= 2000
+        && isValidMediaUrl(data.mediaUrl)
+        && data.mediaMimeType is string && data.mediaMimeType.size() <= 100
+        && (
+          (data.messageType == 'text' && data.text.size() >= 1 && data.mediaUrl == '')
+          || (data.messageType in ['image', 'video', 'audio'] && data.mediaUrl.size() >= 1)
+        )
+        && data.createdAt is timestamp;
+    }
+
+    function isValidBroadcast(data) {
+      return data.keys().hasAll(['title', 'text', 'category', 'authorId', 'authorName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['title', 'text', 'category', 'authorId', 'authorName', 'createdAt', 'updatedAt'])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 2000
+        && data.category in ['announcement', 'update', 'offer', 'urgent']
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPublicSettings(data) {
+      return data.keys().hasAll([
+          'pageName', 'tagline', 'welcomePopupTitle',
+          'welcomePopupSubtitle', 'greetingMessage', 'offlineAutoReply',
+          'adminAvatarURL', 'updatedAt', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'pageName', 'tagline', 'welcomePopupTitle',
+          'welcomePopupSubtitle', 'greetingMessage', 'offlineAutoReply',
+          'adminAvatarURL', 'updatedAt', 'updatedBy'
+        ])
+        && data.pageName is string && data.pageName.size() >= 1 && data.pageName.size() <= 80
+        && data.tagline is string && data.tagline.size() >= 1 && data.tagline.size() <= 160
+        && data.welcomePopupTitle is string && data.welcomePopupTitle.size() >= 1 && data.welcomePopupTitle.size() <= 100
+        && data.welcomePopupSubtitle is string && data.welcomePopupSubtitle.size() >= 1 && data.welcomePopupSubtitle.size() <= 240
+        && data.greetingMessage is string && data.greetingMessage.size() >= 1 && data.greetingMessage.size() <= 500
+        && data.offlineAutoReply is string && data.offlineAutoReply.size() >= 1 && data.offlineAutoReply.size() <= 500
+        && isValidAvatarUrl(data.adminAvatarURL)
+        && data.updatedAt is timestamp
+        && isValidId(data.updatedBy);
+    }
+
+    function isValidAdminPresence(data) {
+      return data.keys().hasAll(['isOnline', 'mode', 'lastSeenAt', 'updatedBy'])
+        && data.keys().hasOnly(['isOnline', 'mode', 'lastSeenAt', 'updatedBy'])
+        && data.isOnline is bool
+        && data.mode in ['auto', 'online', 'offline']
+        && data.lastSeenAt is timestamp
+        && isValidId(data.updatedBy);
+    }
+
+    function isValidHttpsLink(url) {
+      return url is string && url.size() >= 10 && url.size() <= 300 && url.matches('^https://.*');
+    }
+
+    function isValidOptionalHttpsLink(url) {
+      return url is string && url.size() <= 300 && (url == '' || url.matches('^https://.*'));
+    }
+
+    function isValidSponsoredLinksConfig(data) {
+      return data.keys().hasAll(['enabled', 'messagesBeforeLink', 'links', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['enabled', 'messagesBeforeLink', 'links', 'updatedAt', 'updatedBy'])
+        && data.enabled is bool
+        && data.messagesBeforeLink is int
+        && data.messagesBeforeLink >= 1
+        && data.messagesBeforeLink <= 50
+        && data.links is list
+        && data.links.size() >= 1
+        && data.links.size() <= 20
+        && isValidHttpsLink(data.links[0])
+        && data.updatedAt is timestamp
+        && isValidId(data.updatedBy);
+    }
+
+    function isValidUserLinkState(data) {
+      return data.keys().hasAll([
+          'userId', 'messagesSinceLink', 'cycleCount',
+          'assignedFirstLink', 'lastClickedLink', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'messagesSinceLink', 'cycleCount',
+          'assignedFirstLink', 'lastClickedLink', 'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && data.messagesSinceLink is int && data.messagesSinceLink >= 0 && data.messagesSinceLink <= 100
+        && data.cycleCount is int && data.cycleCount >= 0 && data.cycleCount <= 100000
+        && isValidOptionalHttpsLink(data.assignedFirstLink)
+        && isValidOptionalHttpsLink(data.lastClickedLink)
+        && data.updatedAt is timestamp;
+    }
+
+    // ------------------------------------------------------------------
+    // Collection Rules
+    // ------------------------------------------------------------------
+
+    // /admins/{adminId}
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(adminId)
+        && isValidAdminRecord(incoming())
+        && incoming().uid == adminId
+        && incoming().addedAt == request.time;
+      allow update: if false;
+      allow delete: if isBootstrappedAdmin() && isValidId(adminId) && adminId != request.auth.uid;
+    }
+
+    // /users/{userId} - Strict PII isolation
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().lastSeenAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().email == existing().email
+        && incoming().lastSeenAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'lastSeenAt']);
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // /threads/{threadId} - Private 1-to-1 client-admin thread header
+    match /threads/{threadId} {
+      allow get: if isSignedIn() && isValidId(threadId) && (isOwner(threadId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.clientId == request.auth.uid);
+      allow create: if isVerified()
+        && isValidId(threadId)
+        && isValidChatThread(incoming())
+        && (isOwner(threadId) || isAdmin())
+        && incoming().clientId == threadId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().lastMessageAt == request.time;
+      allow update: if isVerified()
+        && isValidId(threadId)
+        && isValidChatThread(incoming())
+        && incoming().clientId == existing().clientId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: Admin actions
+          (isAdmin() && (
+            // Action: Admin replies to thread
+            (incoming().diff(existing()).affectedKeys().hasOnly([
+              'lastMessageText', 'lastMessageSender', 'lastMessageAt',
+              'unreadByClient', 'unreadByAdmin', 'status', 'updatedAt'
+            ]) && incoming().lastMessageSender == 'admin' && incoming().lastMessageAt == request.time)
+            ||
+            // Action: Admin marks read or toggles resolved status
+            incoming().diff(existing()).affectedKeys().hasOnly(['unreadByAdmin', 'status', 'updatedAt'])
+          ))
+          ||
+          // Tier 2: Client owner actions
+          (isOwner(threadId) && (
+            // Action: Client sends a message (or triggers system auto-reply)
+            (incoming().diff(existing()).affectedKeys().hasOnly([
+              'clientName', 'clientPhotoURL', 'lastMessageText', 'lastMessageSender',
+              'lastMessageAt', 'unreadByAdmin', 'status', 'updatedAt'
+            ])
+              && incoming().lastMessageSender in ['client', 'system']
+              && incoming().lastMessageAt == request.time
+              && incoming().status == 'open'
+              && incoming().unreadByAdmin >= existing().unreadByAdmin)
+            ||
+            // Action: Client marks admin messages as read
+            (incoming().diff(existing()).affectedKeys().hasOnly(['unreadByClient', 'updatedAt'])
+              && incoming().unreadByClient == 0)
+            ||
+            // Action: Client updates profile photo or display name
+            incoming().diff(existing()).affectedKeys().hasOnly(['clientName', 'clientPhotoURL', 'updatedAt'])
+          ))
+        );
+      allow delete: if isAdmin() && isValidId(threadId);
+
+      // /threads/{threadId}/messages/{messageId}
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(threadId) && isValidId(messageId) && (
+          isOwner(threadId) || isAdmin()
+        );
+        allow list: if isSignedIn() && (isOwner(threadId) || isAdmin());
+        allow create: if isVerified()
+          && isValidId(threadId)
+          && isValidId(messageId)
+          && isValidChatMessage(incoming())
+          && incoming().threadId == threadId
+          && incoming().senderId == request.auth.uid
+          && incoming().createdAt == request.time
+          && getAfter(/databases/$(database)/documents/threads/$(threadId)).data.updatedAt == request.time
+          && (
+            (isOwner(threadId) && incoming().senderRole == 'client')
+            || (isAdmin() && incoming().senderRole == 'admin')
+            || (
+              isOwner(threadId)
+              && incoming().senderRole == 'system'
+              && incoming().messageType == 'text'
+              && exists(/databases/$(database)/documents/settings/public)
+              && (
+                ('greetingMessage' in get(/databases/$(database)/documents/settings/public).data
+                  && incoming().text == get(/databases/$(database)/documents/settings/public).data.greetingMessage)
+                || ('offlineAutoReply' in get(/databases/$(database)/documents/settings/public).data
+                  && incoming().text == get(/databases/$(database)/documents/settings/public).data.offlineAutoReply)
+              )
+            )
+          );
+        allow update: if false;
+        allow delete: if isAdmin() && isValidId(threadId) && isValidId(messageId);
+      }
+    }
+
+    // /broadcasts/{broadcastId} - O(1) Admin Broadcasts to all users
+    match /broadcasts/{broadcastId} {
+      allow get: if isSignedIn() && isValidId(broadcastId);
+      allow list: if isSignedIn() && resource.data.createdAt >= timestamp.date(1970, 1, 1);
+      allow create: if isAdmin()
+        && isValidId(broadcastId)
+        && isValidBroadcast(incoming())
+        && incoming().authorId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(broadcastId)
+        && isValidBroadcast(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'text', 'category', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(broadcastId);
+    }
+
+    // /settings/{settingId} - Public page config ('public') & rotating link config ('links')
+    match /settings/{settingId} {
+      allow get: if settingId == 'public' || (settingId == 'links' && isSignedIn());
+      allow list: if false;
+      allow create: if isAdmin() && (
+        (settingId == 'public'
+          && isValidPublicSettings(incoming())
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time)
+        ||
+        (settingId == 'links'
+          && isValidSponsoredLinksConfig(incoming())
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time)
+      );
+      allow update: if isAdmin() && (
+        (settingId == 'public'
+          && isValidPublicSettings(incoming())
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'pageName', 'tagline', 'welcomePopupTitle',
+            'welcomePopupSubtitle', 'greetingMessage', 'offlineAutoReply',
+            'adminAvatarURL', 'updatedAt', 'updatedBy'
+          ]))
+        ||
+        (settingId == 'links'
+          && isValidSponsoredLinksConfig(incoming())
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'enabled', 'messagesBeforeLink', 'links', 'updatedAt', 'updatedBy'
+          ]))
+      );
+      allow delete: if false;
+    }
+
+    // /presence/{presenceId} - Live admin online/offline status
+    match /presence/{presenceId} {
+      allow get: if presenceId == 'admin';
+      allow list: if false;
+      allow create: if isAdmin()
+        && presenceId == 'admin'
+        && isValidAdminPresence(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().lastSeenAt == request.time;
+      allow update: if isAdmin()
+        && presenceId == 'admin'
+        && isValidAdminPresence(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().lastSeenAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'isOnline', 'mode', 'lastSeenAt', 'updatedBy'
+        ]);
+      allow delete: if false;
+    }
+
+    // /linkStates/{userId} - Per-client 5-message cycle counter & admin-reviewed priority link
+    match /linkStates/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isValidUserLinkState(incoming())
+        && incoming().userId == userId
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(userId) && incoming().assignedFirstLink == '')
+          || isAdmin()
+        );
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isValidUserLinkState(incoming())
+        && incoming().userId == existing().userId
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'assignedFirstLink', 'messagesSinceLink', 'cycleCount', 'updatedAt'
+          ]))
+          ||
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'messagesSinceLink', 'cycleCount', 'lastClickedLink', 'updatedAt'
+          ]))
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // /test/connection - Boot connectivity probe
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, write: if false;
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "BartaConnect",
+  "description": "Direct real-time Messenger-style client chat and admin broadcast communication platform.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

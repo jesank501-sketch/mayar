@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
 import {
   collection,
+  doc,
   limit,
   onSnapshot,
   orderBy,
@@ -75,6 +76,7 @@ import {
   playMessageAlertTone,
   showLocalNotification,
   syncExistingPushSubscription,
+  watchServiceWorkerControllerForPush,
 } from '../utils/pushNotifications';
 import { Avatar } from './Avatar';
 import { ChatComposer } from './ChatComposer';
@@ -176,6 +178,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [enablingNotif, setEnablingNotif] = useState(false);
   const [notifDismissed, setNotifDismissed] = useState(false);
   const [notifModalOpen, setNotifModalOpen] = useState(false);
+  const [pushSynced, setPushSynced] = useState(false);
+  const [selectedThreadPushReady, setSelectedThreadPushReady] = useState<boolean | null>(null);
+  const [pushDeliveryNotice, setPushDeliveryNotice] = useState<string | null>(null);
   const [incomingThreadAlert, setIncomingThreadAlert] = useState<ChatThread | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -203,7 +208,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (isNotificationSupported()) {
       setNotifPermission(Notification.permission);
     }
-    void syncExistingPushSubscription(user);
+    void syncExistingPushSubscription(user).then((ok) => setPushSynced(ok));
+    return watchServiceWorkerControllerForPush(user);
   }, [user]);
 
   const handleEnableAdminNotifications = async (): Promise<
@@ -215,6 +221,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const res = await enableAndSubscribePushNotifications(user);
       setNotifPermission(res);
       if (res === 'granted') {
+        const synced = await syncExistingPushSubscription(user);
+        setPushSynced(synced);
         void showLocalNotification({
           title: settings.pageName,
           body:
@@ -470,6 +478,26 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   }, [selectedThread]);
 
+  // Monitor whether the selected client has registered mobile/browser Web Push
+  useEffect(() => {
+    if (!selectedThreadId) {
+      setSelectedThreadPushReady(null);
+      setPushDeliveryNotice(null);
+      return;
+    }
+    setPushDeliveryNotice(null);
+    const unsub = onSnapshot(
+      doc(db, 'pushSubscriptions', selectedThreadId),
+      (snap) => {
+        setSelectedThreadPushReady(snap.exists());
+      },
+      () => {
+        setSelectedThreadPushReady(null);
+      },
+    );
+    return () => unsub();
+  }, [selectedThreadId]);
+
   // Auto-scroll when selected thread messages update
   useEffect(() => {
     if (chatViewMode === 'chat') {
@@ -573,13 +601,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               : 'Sent a video'
             : payload.text || (lang === 'bn' ? 'নতুন মেসেজ এসেছে' : 'New message');
 
-    void dispatchAdminPushNotification({
+    const pushRes = await dispatchAdminPushNotification({
       adminUser: user,
       targetUserId: selectedThread.id,
       title: settings.pageName,
       body: pushPreview,
       tag: `thread-${selectedThread.id}`,
     });
+    if (pushRes.sent > 0) {
+      setPushDeliveryNotice(null);
+    } else if (!pushRes.staticHost) {
+      setPushDeliveryNotice(
+        lang === 'bn'
+          ? 'মেসেজ পাঠানো হয়েছে, তবে এই ইউজার এখনো তাঁর ফোনে "নোটিফিকেশন চালু করুন" বাটনে Allow করেননি—তাই ফোনে পুশ নোটিফিকেশন যায়নি (অ্যাপ খোলা থাকলে সরাসরি দেখবেন)।'
+          : 'Message sent, but this user has not tapped Allow Notifications on their phone yet (in-app chat updates live when open).',
+      );
+    }
   };
 
   const handleToggleThreadStatus = async () => {
@@ -1259,15 +1296,38 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       <h2 className="text-sm font-bold text-slate-900 truncate">
                         {selectedThread.clientName}
                       </h2>
-                      <p className="text-xs text-slate-500 truncate">
-                        {selectedThread.clientEmail} ·{' '}
-                        {selectedThread.status === 'resolved'
-                          ? lang === 'bn'
-                            ? 'সমাধানকৃত'
-                            : 'Resolved'
-                          : lang === 'bn'
-                            ? 'চলমান'
-                            : 'Open'}
+                      <p className="text-xs text-slate-500 truncate flex items-center gap-1.5">
+                        <span className="truncate">
+                          {selectedThread.clientEmail} ·{' '}
+                          {selectedThread.status === 'resolved'
+                            ? lang === 'bn'
+                              ? 'সমাধানকৃত'
+                              : 'Resolved'
+                            : lang === 'bn'
+                              ? 'চলমান'
+                              : 'Open'}
+                        </span>
+                        {selectedThreadPushReady !== null && (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                              selectedThreadPushReady
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-amber-50 text-amber-700'
+                            }`}
+                          >
+                            {selectedThreadPushReady ? (
+                              <>
+                                <Bell className="w-2.5 h-2.5" />
+                                {lang === 'bn' ? 'ফোনে পুশ চালু' : 'Push Ready'}
+                              </>
+                            ) : (
+                              <>
+                                <BellOff className="w-2.5 h-2.5" />
+                                {lang === 'bn' ? 'ফোনে পুশ বন্ধ' : 'Push Off'}
+                              </>
+                            )}
+                          </span>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -1386,6 +1446,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         {lang === 'bn' ? 'বাতিল' : 'Cancel'}
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {pushDeliveryNotice && (
+                  <div className="px-4 sm:px-6 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2 text-xs text-amber-900 shrink-0">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <BellOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>{pushDeliveryNotice}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setPushDeliveryNotice(null)}
+                      className="text-amber-700 hover:text-amber-950 font-medium shrink-0 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 )}
 
@@ -2381,6 +2457,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         permission={notifPermission}
         lang={lang}
         enabling={enablingNotif}
+        pushSynced={pushSynced}
         onRetryPermission={handleEnableAdminNotifications}
       />
     </div>

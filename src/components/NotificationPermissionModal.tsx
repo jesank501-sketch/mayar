@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Bell, BellOff, RefreshCw, Volume2, X } from 'lucide-react';
+import { Bell, BellOff, CheckCircle2, RefreshCw, Volume2, X } from 'lucide-react';
 import { Language } from '../types';
-import { playMessageAlertTone } from '../utils/pushNotifications';
+import { playMessageAlertTone, showLocalNotification } from '../utils/pushNotifications';
 
 interface NotificationPermissionModalProps {
   isOpen: boolean;
@@ -9,6 +9,7 @@ interface NotificationPermissionModalProps {
   permission: NotificationPermission | 'unsupported';
   lang: Language;
   enabling: boolean;
+  pushSynced?: boolean;
   onRetryPermission: () => Promise<NotificationPermission | 'unsupported'>;
 }
 
@@ -18,6 +19,7 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
   permission,
   lang,
   enabling,
+  pushSynced = false,
   onRetryPermission,
 }) => {
   const [statusFeedback, setStatusFeedback] = useState<string | null>(null);
@@ -31,7 +33,19 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
     const next = await onRetryPermission();
     if (next === 'granted') {
       playMessageAlertTone();
-      onClose();
+      void showLocalNotification({
+        title: 'BartaConnect',
+        body:
+          lang === 'bn'
+            ? 'টেস্ট সফল! এখন থেকে মেসেজ এলেই মোবাইলে নোটিফিকেশন পাবেন।'
+            : 'Notifications active! You will receive alerts whenever messages arrive.',
+        tag: 'notif-test-check',
+      });
+      setStatusFeedback(
+        lang === 'bn'
+          ? 'নোটিফিকেশন ও ব্যাকগ্রাউন্ড পুশ সফলভাবে সিঙ্ক হয়েছে!'
+          : 'Notifications and background push synced successfully!',
+      );
     } else if (next === 'denied') {
       setStatusFeedback(
         lang === 'bn'
@@ -49,6 +63,16 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
 
   const handleTestSound = () => {
     playMessageAlertTone();
+    if (permission === 'granted') {
+      void showLocalNotification({
+        title: 'BartaConnect',
+        body:
+          lang === 'bn'
+            ? 'সাউন্ড ও মোবাইল নোটিফিকেশন টেস্ট!'
+            : 'Sound & mobile notification test!',
+        tag: `notif-sound-test-${Date.now()}`,
+      });
+    }
     setStatusFeedback(
       lang === 'bn'
         ? 'সাউন্ড অ্যালার্ট চালু আছে! নতুন মেসেজ এলেই এই টোন বাজবে।'
@@ -65,11 +89,15 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
               className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
                 permission === 'denied'
                   ? 'bg-amber-50 text-amber-600'
-                  : 'bg-blue-50 text-blue-600'
+                  : permission === 'granted'
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : 'bg-blue-50 text-blue-600'
               }`}
             >
               {permission === 'denied' ? (
                 <BellOff className="w-5 h-5" />
+              ) : permission === 'granted' ? (
+                <CheckCircle2 className="w-5 h-5" />
               ) : (
                 <Bell className="w-5 h-5" />
               )}
@@ -80,9 +108,13 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
                   ? lang === 'bn'
                     ? 'নোটিফিকেশন ব্লক করা আছে'
                     : 'Notifications Blocked'
-                  : lang === 'bn'
-                    ? 'নোটিফিকেশন চালু করুন'
-                    : 'Enable Notifications'}
+                  : permission === 'granted'
+                    ? lang === 'bn'
+                      ? 'মোবাইল নোটিফিকেশন স্ট্যাটাস'
+                      : 'Notification Status'
+                    : lang === 'bn'
+                      ? 'মোবাইল নোটিফিকেশন চালু করুন'
+                      : 'Enable Mobile Notifications'}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
                 {lang === 'bn'
@@ -112,8 +144,8 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
               </p>
               <p>
                 {lang === 'bn'
-                  ? '১. আগে "Block" হয়ে থাকায় ব্রাউজার নিজে থেকে আর পপআপ দেয় না। অ্যাড্রেস বারের বামের তালা (Lock) বা সেটিংস আইকনে ক্লিক করুন।'
-                  : '1. Once blocked, browsers suppress repeat popups. Tap the Lock / Site Settings icon in your address bar.'}
+                  ? '১. আগে "Block" হয়ে থাকায় ব্রাউজার নিজে থেকে আর পপআপ দেয় না। অ্যাড্রেস বারের বামের তালা (Lock) বা ফোনের App Settings -> Notifications চালু করুন।'
+                  : '1. Once blocked, browsers suppress repeat popups. Tap the Lock / Site Settings icon or mobile App Settings -> Notifications.'}
               </p>
               <p>
                 {lang === 'bn'
@@ -123,16 +155,33 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
               {isInIframe && (
                 <p className="text-blue-700 font-medium pt-0.5">
                   {lang === 'bn'
-                    ? 'টিপস: প্রিভিউ ফ্রেমের ভেতর ব্রাউজার অনেক সময় নোটিফিকেশন আটকে দেয়—সরাসরি Netlify বা নিজের ব্রাউজার ট্যাবে খুললে সহজেই Allow পপআপ আসবে।'
-                    : 'Tip: Embedded frames often block browser notifications — opening the live app directly in a browser tab allows 1-tap notification prompts.'}
+                    ? 'টিপস: প্রিভিউ ফ্রেমের ভেতর ব্রাউজার অনেক সময় নোটিফিকেশন আটকে দেয়—সরাসরি ডাউনলোড করা অ্যাপ বা ব্রাউজার ট্যাবে খুললে সহজেই Allow পপআপ আসবে।'
+                    : 'Tip: Embedded frames often block browser notifications — opening the installed app or a direct browser tab allows 1-tap notification prompts.'}
                 </p>
               )}
+            </>
+          ) : permission === 'granted' ? (
+            <>
+              <p className="font-semibold text-emerald-800">
+                {lang === 'bn'
+                  ? 'ব্রাউজার নোটিফিকেশন পারমিশন: চালু (Allowed)'
+                  : 'Browser Notification Permission: Allowed'}
+              </p>
+              <p>
+                {pushSynced
+                  ? lang === 'bn'
+                    ? 'ব্যাকগ্রাউন্ড পুশ সার্ভারের সাথে সংযুক্ত আছে। অ্যাপ বন্ধ থাকলেও মেসেজ এলে ফোনে নোটিফিকেশন আসবে।'
+                    : 'Connected to background push server. Notifications will arrive even when the app is closed.'
+                  : lang === 'bn'
+                    ? 'ইন-অ্যাপ অ্যালার্ট চালু আছে। নিচের "পুশ সিঙ্ক করুন" বাটনে ক্লিক করে ব্যাকগ্রাউন্ড পুশ রিফ্রেশ করে নিন (ফোন লক থাকলেও মেসেজ আসার জন্য)।'
+                    : 'In-app alerts are active. Tap "Sync Push" below to refresh background push registration.'}
+              </p>
             </>
           ) : (
             <p>
               {lang === 'bn'
-                ? 'নিচের "আবার অনুমতি চেষ্টা করুন" বাটনে ক্লিক করে ব্রাউজার পপআপে Allow দিন।'
-                : 'Tap "Retry Permission" below and choose Allow when your browser asks.'}
+                ? 'অ্যাপ বন্ধ বা ফোন লক থাকলেও অ্যাডমিনের মেসেজ পেতে নিচের বাটনে ক্লিক করে ব্রাউজার পপআপে Allow দিন।'
+                : 'Tap the button below and choose Allow so you get instant alerts even when the app is closed.'}
             </p>
           )}
         </div>
@@ -156,9 +205,13 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
                 ? lang === 'bn'
                   ? 'চালু হচ্ছে...'
                   : 'Enabling...'
-                : lang === 'bn'
-                  ? 'আবার অনুমতি চেষ্টা করুন'
-                  : 'Retry Permission'}
+                : permission === 'granted'
+                  ? lang === 'bn'
+                    ? 'পুশ সিঙ্ক ও টেস্ট'
+                    : 'Sync Push & Test'
+                  : lang === 'bn'
+                    ? 'নোটিফিকেশন চালু করুন'
+                    : 'Enable Notifications'}
             </span>
           </button>
 

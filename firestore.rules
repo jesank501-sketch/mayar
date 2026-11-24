@@ -230,6 +230,17 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidPushSubscriptionRecord(data) {
+      return data.keys().hasAll(['userId', 'endpoint', 'p256dh', 'auth', 'vapidPublicKey', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'endpoint', 'p256dh', 'auth', 'vapidPublicKey', 'updatedAt'])
+        && isValidId(data.userId)
+        && data.endpoint is string && data.endpoint.size() >= 15 && data.endpoint.size() <= 1500 && data.endpoint.matches('^https://.*')
+        && data.p256dh is string && data.p256dh.size() >= 10 && data.p256dh.size() <= 300
+        && data.auth is string && data.auth.size() >= 6 && data.auth.size() <= 150
+        && data.vapidPublicKey is string && data.vapidPublicKey.size() >= 20 && data.vapidPublicKey.size() <= 300
+        && data.updatedAt is timestamp;
+    }
+
     // ------------------------------------------------------------------
     // Collection Rules
     // ------------------------------------------------------------------
@@ -487,6 +498,28 @@ service cloud.firestore {
         && incoming().userId == existing().userId
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['tokens', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+    }
+
+    // /pushSubscriptions/{userId} - Web Push subscription per user device
+    match /pushSubscriptions/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidPushSubscriptionRecord(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidPushSubscriptionRecord(incoming())
+        && incoming().userId == existing().userId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'endpoint', 'p256dh', 'auth', 'vapidPublicKey', 'updatedAt'
+        ]);
       allow delete: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
     }
 

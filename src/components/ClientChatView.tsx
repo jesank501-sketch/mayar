@@ -50,9 +50,11 @@ import { resolveActiveLinkForUser } from '../utils/linkRotation';
 import {
   enableAndSubscribePushNotifications,
   isNotificationSupported,
+  isStandalonePwa,
   playMessageAlertTone,
   showLocalNotification,
   syncExistingPushSubscription,
+  watchServiceWorkerControllerForPush,
 } from '../utils/pushNotifications';
 import { Avatar } from './Avatar';
 import { ChatComposer } from './ChatComposer';
@@ -139,6 +141,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   const [enablingNotif, setEnablingNotif] = useState(false);
   const [notifDismissed, setNotifDismissed] = useState(false);
   const [notifModalOpen, setNotifModalOpen] = useState(false);
+  const [pushSynced, setPushSynced] = useState(false);
   const [incomingToast, setIncomingToast] = useState<string | null>(null);
 
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
@@ -210,9 +213,22 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   useEffect(() => {
     if (isAdminPreview) return;
     if (isNotificationSupported()) {
-      setNotifPermission(Notification.permission);
+      const currentPerm = Notification.permission;
+      setNotifPermission(currentPerm);
+      if (currentPerm === 'default' && isStandalonePwa()) {
+        const promptKey = `bartaconnect_pwa_notif_prompted_${user.uid}`;
+        try {
+          if (!window.sessionStorage.getItem(promptKey)) {
+            window.sessionStorage.setItem(promptKey, '1');
+            setNotifModalOpen(true);
+          }
+        } catch {
+          setNotifModalOpen(true);
+        }
+      }
     }
-    void syncExistingPushSubscription(user);
+    void syncExistingPushSubscription(user).then((ok) => setPushSynced(ok));
+    return watchServiceWorkerControllerForPush(user);
   }, [user, isAdminPreview]);
 
   const handleEnableNotifications = async (): Promise<
@@ -224,6 +240,8 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
       const result = await enableAndSubscribePushNotifications(user);
       setNotifPermission(result);
       if (result === 'granted') {
+        const synced = await syncExistingPushSubscription(user);
+        setPushSynced(synced);
         void showLocalNotification({
           title: settings.pageName,
           body:
@@ -352,6 +370,11 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                       : m.text || (currentLang === 'bn' ? 'নতুন মেসেজ' : 'New message');
 
               playMessageAlertTone();
+              try {
+                navigator.vibrate?.([160, 80, 160]);
+              } catch {
+                // Ignore unsupported vibrate
+              }
               if (activeTabRef.current !== 'all') {
                 setIncomingToast(preview);
               }
@@ -871,11 +894,11 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
               </div>
 
               {/* Mobile / Desktop Notification Bell Trigger */}
-              {!isAdminPreview && notifPermission !== 'unsupported' && notifPermission !== 'granted' && (
+              {!isAdminPreview && notifPermission !== 'unsupported' && (
                 <button
                   type="button"
                   onClick={() => {
-                    if (notifPermission === 'denied') {
+                    if (notifPermission === 'denied' || notifPermission === 'granted') {
                       setNotifDismissed(false);
                       setNotifModalOpen(true);
                     } else {
@@ -884,18 +907,26 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                   }}
                   disabled={enablingNotif}
                   aria-label={
-                    lang === 'bn' ? 'নোটিফিকেশন চালু করুন' : 'Enable notifications'
+                    lang === 'bn' ? 'নোটিফিকেশন স্ট্যাটাস' : 'Notification settings'
                   }
                   title={
                     notifPermission === 'denied'
                       ? lang === 'bn'
                         ? 'ব্রাউজার সেটিংস থেকে নোটিফিকেশন অনুমতি দিন'
                         : 'Notifications blocked in browser settings'
-                      : lang === 'bn'
-                        ? 'নোটিফিকেশন চালু করুন'
-                        : 'Enable notifications'
+                      : notifPermission === 'granted'
+                        ? lang === 'bn'
+                          ? 'নোটিফিকেশন চালু আছে (টেস্ট/সিঙ্ক করুন)'
+                          : 'Notifications enabled (Test / Sync)'
+                        : lang === 'bn'
+                          ? 'নোটিফিকেশন চালু করুন'
+                          : 'Enable notifications'
                   }
-                  className="min-w-[44px] min-h-[44px] md:min-h-0 md:min-w-0 inline-flex items-center justify-center gap-1.5 md:px-2.5 md:py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl md:rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className={`min-w-[44px] min-h-[44px] md:min-h-0 md:min-w-0 inline-flex items-center justify-center gap-1.5 md:px-2.5 md:py-1.5 text-xs font-medium rounded-xl md:rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    notifPermission === 'granted'
+                      ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+                      : 'text-blue-700 bg-blue-50 hover:bg-blue-100'
+                  }`}
                 >
                   {notifPermission === 'denied' ? (
                     <BellOff className="w-4 h-4 md:w-3.5 md:h-3.5 text-amber-600" />
@@ -907,9 +938,13 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                       ? lang === 'bn'
                         ? 'ব্লক করা'
                         : 'Blocked'
-                      : lang === 'bn'
-                        ? 'অ্যালার্ট চালু'
-                        : 'Alerts On'}
+                      : notifPermission === 'granted'
+                        ? lang === 'bn'
+                          ? 'অ্যালার্ট চালু'
+                          : 'Alerts On'
+                        : lang === 'bn'
+                          ? 'চালু করুন'
+                          : 'Turn On'}
                   </span>
                 </button>
               )}
@@ -1267,6 +1302,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
         permission={notifPermission}
         lang={lang}
         enabling={enablingNotif}
+        pushSynced={pushSynced}
         onRetryPermission={handleEnableNotifications}
       />
     </div>

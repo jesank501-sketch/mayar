@@ -224,6 +224,70 @@ async function checkAdminDocWithToken(uid: string, idToken: string): Promise<boo
   }
 }
 
+interface FirestorePushDoc {
+  fields?: {
+    userId?: { stringValue?: string };
+    endpoint?: { stringValue?: string };
+    p256dh?: { stringValue?: string };
+    auth?: { stringValue?: string };
+  };
+}
+
+function parseFirestorePushDoc(docData: FirestorePushDoc): {
+  userId: string;
+  subscription: WebPushSubscription;
+} | null {
+  const f = docData.fields;
+  const userId = f?.userId?.stringValue ?? '';
+  const endpoint = f?.endpoint?.stringValue ?? '';
+  const p256dh = f?.p256dh?.stringValue ?? '';
+  const auth = f?.auth?.stringValue ?? '';
+  if (!userId || !endpoint || !p256dh || !auth) return null;
+  const sub: WebPushSubscription = {
+    endpoint,
+    keys: { p256dh, auth },
+  };
+  return isValidWebPushSubscription(sub) ? { userId, subscription: sub } : null;
+}
+
+async function fetchFirestorePushSubscription(
+  uid: string,
+  adminIdToken: string,
+): Promise<WebPushSubscription | null> {
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseConfig.projectId)}/databases/${encodeURIComponent(firebaseConfig.firestoreDatabaseId)}/documents/pushSubscriptions/${encodeURIComponent(uid)}`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${adminIdToken}` },
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as FirestorePushDoc;
+    return parseFirestorePushDoc(data)?.subscription ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function listFirestorePushSubscriptions(
+  adminIdToken: string,
+): Promise<Array<{ userId: string; subscription: WebPushSubscription }>> {
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseConfig.projectId)}/databases/${encodeURIComponent(firebaseConfig.firestoreDatabaseId)}/documents/pushSubscriptions?pageSize=200`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${adminIdToken}` },
+    });
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as { documents?: FirestorePushDoc[] };
+    const out: Array<{ userId: string; subscription: WebPushSubscription }> = [];
+    for (const d of data.documents ?? []) {
+      const parsed = parseFirestorePushDoc(d);
+      if (parsed) out.push(parsed);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 const CANONICAL_FEMALE_VOICE = 'Kore';
 const UNIFIED_VOICE_STYLE =
   'Single consistent young woman speaker, steady natural pitch, calm warm tone, even conversational pace, identical vocal identity across every reply';
@@ -894,9 +958,34 @@ async function startServer(): Promise<void> {
           (typeof bodyObj?.tag === 'string' ? bodyObj.tag.trim() : '').slice(0, 80) ||
           'bartaconnect-message';
 
-        const recipientUids = isBroadcast
-          ? Object.keys(pushSubscriptions).filter((uid) => uid !== caller.uid)
-          : [targetUserId];
+        const subsByUid: Record<string, WebPushSubscription[]> = {};
+        if (isBroadcast) {
+          for (const uid of Object.keys(pushSubscriptions)) {
+            if (uid !== caller.uid && pushSubscriptions[uid]?.length) {
+              subsByUid[uid] = [...pushSubscriptions[uid]];
+            }
+          }
+          const remoteEntries = await listFirestorePushSubscriptions(token);
+          for (const entry of remoteEntries) {
+            if (entry.userId === caller.uid) continue;
+            const list = subsByUid[entry.userId] ?? [];
+            if (!list.some((s) => s.endpoint === entry.subscription.endpoint)) {
+              list.push(entry.subscription);
+            }
+            subsByUid[entry.userId] = list;
+          }
+        } else {
+          const list = [...(pushSubscriptions[targetUserId] ?? [])];
+          const remoteSub = await fetchFirestorePushSubscription(targetUserId, token);
+          if (remoteSub && !list.some((s) => s.endpoint === remoteSub.endpoint)) {
+            list.push(remoteSub);
+          }
+          if (list.length > 0) {
+            subsByUid[targetUserId] = list;
+          }
+        }
+
+        const recipientUids = Object.keys(subsByUid);
 
         const payload = JSON.stringify({
           title,
@@ -906,43 +995,53 @@ async function startServer(): Promise<void> {
         });
 
         let sentCount = 0;
+        let attemptedCount = 0;
         let dirty = false;
 
         for (const uid of recipientUids) {
-          const subs = pushSubscriptions[uid];
+          const subs = subsByUid[uid];
           if (!subs || subs.length === 0) continue;
 
-          const activeSubs: WebPushSubscription[] = [];
+          const activeLocalSubs: WebPushSubscription[] = [];
           await Promise.all(
             subs.map(async (sub) => {
+              attemptedCount += 1;
               try {
-                await webpush.sendNotification(sub, payload, { TTL: 86_400 });
-                activeSubs.push(sub);
+                await webpush.sendNotification(sub, payload, {
+                  TTL: 86_400,
+                  urgency: 'high',
+                });
+                activeLocalSubs.push(sub);
                 sentCount += 1;
               } catch (pushErr) {
                 const statusCode = (pushErr as { statusCode?: number })?.statusCode;
-                if (statusCode === 404 || statusCode === 410) {
+                if (
+                  statusCode === 401 ||
+                  statusCode === 403 ||
+                  statusCode === 404 ||
+                  statusCode === 410
+                ) {
                   dirty = true;
                 } else {
-                  activeSubs.push(sub);
+                  activeLocalSubs.push(sub);
                   console.warn('Web push delivery warning:', statusCode ?? pushErr);
                 }
               }
             }),
           );
 
-          if (activeSubs.length !== subs.length) {
-            if (activeSubs.length === 0) {
+          if (pushSubscriptions[uid]) {
+            if (activeLocalSubs.length === 0) {
               delete pushSubscriptions[uid];
             } else {
-              pushSubscriptions[uid] = activeSubs;
+              pushSubscriptions[uid] = activeLocalSubs;
             }
           }
         }
 
         if (dirty) savePushSubscriptions();
 
-        res.json({ ok: true, sent: sentCount });
+        res.json({ ok: true, sent: sentCount, attempted: attemptedCount });
       } catch (err) {
         console.error('Push notify failed:', err);
         res.status(500).json({ error: 'Push notification dispatch failed.' });

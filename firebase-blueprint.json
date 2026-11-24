@@ -417,6 +417,45 @@
         }
       },
       "required": ["userId", "tokens", "updatedAt"]
+    },
+    "PushSubscriptionRecord": {
+      "title": "PushSubscriptionRecord",
+      "description": "Web Push browser/PWA subscription for delivering background notifications to a user device.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 15,
+          "maxLength": 1500,
+          "pattern": "^https://.*"
+        },
+        "p256dh": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 300
+        },
+        "auth": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 150
+        },
+        "vapidPublicKey": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 300
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "endpoint", "p256dh", "auth", "vapidPublicKey", "updatedAt"]
     }
   },
   "firestore": {
@@ -455,6 +494,10 @@
     "/fcmTokens/{userId}": {
       "schema": { "$ref": "#/entities/FcmTokenRecord" },
       "description": "Per-user Firebase Cloud Messaging push notification device tokens."
+    },
+    "/pushSubscriptions/{userId}": {
+      "schema": { "$ref": "#/entities/PushSubscriptionRecord" },
+      "description": "Per-user Web Push subscription credentials for instant mobile PWA notifications."
     }
   }
 }

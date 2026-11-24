@@ -55,7 +55,9 @@ self.addEventListener('push', (event) => {
     badge: '/pwa-192x192.png',
     tag: payload.tag,
     renotify: true,
-    vibrate: [140, 60, 140],
+    silent: false,
+    requireInteraction: false,
+    vibrate: [200, 100, 200],
     data: { url: payload.url },
   };
 

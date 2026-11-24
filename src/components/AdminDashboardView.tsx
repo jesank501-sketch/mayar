@@ -37,6 +37,8 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
   adminAssignFirstLinkForUser,
   createBroadcast,
+  deleteChatMessage,
+  deleteChatThread,
   editBroadcast,
   removeBroadcast,
   savePublicSettings,
@@ -146,6 +148,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [broadcastFeedback, setBroadcastFeedback] = useState<string | null>(null);
   const [editingBroadcastId, setEditingBroadcastId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteMsgId, setConfirmDeleteMsgId] = useState<string | null>(null);
+  const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null);
+  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
+  const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
 
   // Settings & Avatar modal state
   const [settingsForm, setSettingsForm] = useState<PublicPageSettings>(settings);
@@ -495,6 +501,42 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setMsgLimit(60);
     setChatViewMode('chat');
     setVideoCallNotice(false);
+    setConfirmDeleteMsgId(null);
+    setConfirmDeleteThreadId(null);
+  };
+
+  const handleDeleteMessage = async (message: ChatMessage) => {
+    if (!selectedThread || deletingMsgId) return;
+    setDeletingMsgId(message.id);
+    try {
+      const remaining = messages.filter((item) => item.id !== message.id);
+      const isLatestMessage = messages[messages.length - 1]?.id === message.id;
+      const remainingLatest = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+      await deleteChatMessage({
+        threadId: selectedThread.id,
+        messageId: message.id,
+        isLatestMessage,
+        remainingLatest,
+      });
+      setConfirmDeleteMsgId(null);
+    } finally {
+      setDeletingMsgId(null);
+    }
+  };
+
+  const handleDeleteThread = async (threadId: string) => {
+    if (deletingThreadId) return;
+    setDeletingThreadId(threadId);
+    try {
+      await deleteChatThread(threadId);
+      setConfirmDeleteThreadId(null);
+      if (selectedThreadId === threadId) {
+        setSelectedThreadId(null);
+        setMessages([]);
+      }
+    } finally {
+      setDeletingThreadId(null);
+    }
   };
 
   const handleSendAdminPayload = async (payload: {
@@ -1067,51 +1109,94 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   {filteredThreads.map((t) => {
                     const isSelected = t.id === selectedThreadId;
                     const isUnread = t.unreadByAdmin > 0;
+                    const isConfirmingThreadDelete = confirmDeleteThreadId === t.id;
                     return (
-                      <button
+                      <div
                         key={t.id}
-                        type="button"
-                        onClick={() => handleSelectThread(t)}
-                        className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer ${
+                        className={`flex items-center gap-2 px-4 py-3 transition-colors ${
                           isSelected ? 'bg-blue-50/90' : 'hover:bg-slate-50'
                         }`}
                       >
-                        <Avatar src={t.clientPhotoURL} name={t.clientName} size="md" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <p
-                              className={`text-sm truncate ${
-                                isUnread
-                                  ? 'font-bold text-slate-900'
-                                  : 'font-semibold text-slate-800'
-                              }`}
-                            >
-                              {t.clientName}
-                            </p>
-                            <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
-                              {formatRelativeTime(t.lastMessageAt, lang)}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between gap-2 mt-0.5">
-                            <p
-                              className={`text-xs truncate ${
-                                isUnread ? 'font-medium text-slate-900' : 'text-slate-500'
-                              }`}
-                            >
-                              {t.lastMessageText
-                                ? `${t.lastMessageSender === 'admin' ? (lang === 'bn' ? 'আপনি: ' : 'You: ') : ''}${t.lastMessageText}`
-                                : lang === 'bn'
-                                  ? 'নতুন ইউজার যুক্ত হয়েছে'
-                                  : 'New user connected'}
-                            </p>
-                            {isUnread && (
-                              <span className="text-[11px] font-bold text-blue-600 tabular-nums shrink-0">
-                                {t.unreadByAdmin}
+                        <button
+                          type="button"
+                          onClick={() => handleSelectThread(t)}
+                          className="flex-1 flex items-center gap-3 min-w-0 text-left cursor-pointer"
+                        >
+                          <Avatar src={t.clientPhotoURL} name={t.clientName} size="md" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <p
+                                className={`text-sm truncate ${
+                                  isUnread
+                                    ? 'font-bold text-slate-900'
+                                    : 'font-semibold text-slate-800'
+                                }`}
+                              >
+                                {t.clientName}
+                              </p>
+                              <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
+                                {formatRelativeTime(t.lastMessageAt, lang)}
                               </span>
-                            )}
+                            </div>
+                            <div className="flex items-center justify-between gap-2 mt-0.5">
+                              <p
+                                className={`text-xs truncate ${
+                                  isUnread ? 'font-medium text-slate-900' : 'text-slate-500'
+                                }`}
+                              >
+                                {t.lastMessageText
+                                  ? `${t.lastMessageSender === 'admin' ? (lang === 'bn' ? 'আপনি: ' : 'You: ') : ''}${t.lastMessageText}`
+                                  : lang === 'bn'
+                                    ? 'নতুন ইউজার যুক্ত হয়েছে'
+                                    : 'New user connected'}
+                              </p>
+                              {isUnread && (
+                                <span className="text-[11px] font-bold text-blue-600 tabular-nums shrink-0">
+                                  {t.unreadByAdmin}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      </button>
+                        </button>
+
+                        {isConfirmingThreadDelete ? (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              disabled={deletingThreadId === t.id}
+                              onClick={() => void handleDeleteThread(t.id)}
+                              className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md cursor-pointer disabled:opacity-50"
+                            >
+                              {deletingThreadId === t.id
+                                ? '...'
+                                : lang === 'bn'
+                                  ? 'মুছুন'
+                                  : 'Delete'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteThreadId(null)}
+                              className="px-1.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200 rounded-md cursor-pointer"
+                            >
+                              {lang === 'bn' ? 'না' : 'No'}
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteThreadId(t.id)}
+                            aria-label={
+                              lang === 'bn'
+                                ? `${t.clientName}-এর চ্যাট মুছুন`
+                                : `Delete ${t.clientName} chat`
+                            }
+                            title={lang === 'bn' ? 'পুরো চ্যাট মুছুন' : 'Delete entire chat'}
+                            className="min-w-[34px] min-h-[34px] rounded-lg flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors shrink-0 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     );
                   })}
                   {hasMoreThreads && (
@@ -1251,8 +1336,58 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         </>
                       )}
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfirmDeleteThreadId((prev) =>
+                          prev === selectedThread.id ? null : selectedThread.id,
+                        )
+                      }
+                      title={lang === 'bn' ? 'পুরো চ্যাট মুছুন' : 'Delete Chat'}
+                      aria-label={lang === 'bn' ? 'পুরো চ্যাট মুছুন' : 'Delete Chat'}
+                      className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">
+                        {lang === 'bn' ? 'চ্যাট মুছুন' : 'Delete'}
+                      </span>
+                    </button>
                   </div>
                 </div>
+
+                {confirmDeleteThreadId === selectedThread.id && (
+                  <div className="px-4 sm:px-6 py-2.5 bg-red-50 border-b border-red-200 flex flex-wrap items-center justify-between gap-2 text-xs text-red-900 shrink-0">
+                    <span className="font-medium">
+                      {lang === 'bn'
+                        ? `${selectedThread.clientName}-এর সব মেসেজ ও চ্যাট স্থায়ীভাবে মুছে ফেলবেন?`
+                        : `Permanently delete all messages and chat with ${selectedThread.clientName}?`}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        disabled={deletingThreadId === selectedThread.id}
+                        onClick={() => void handleDeleteThread(selectedThread.id)}
+                        className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg cursor-pointer disabled:opacity-50"
+                      >
+                        {deletingThreadId === selectedThread.id
+                          ? lang === 'bn'
+                            ? 'মুছা হচ্ছে...'
+                            : 'Deleting...'
+                          : lang === 'bn'
+                            ? 'হ্যাঁ, সব মুছুন'
+                            : 'Yes, Delete All'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteThreadId(null)}
+                        className="px-3 py-1.5 bg-white border border-red-200 text-slate-700 hover:bg-slate-50 font-medium rounded-lg cursor-pointer"
+                      >
+                        {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Inline Per-User Link Review & First-Link Control Strip */}
                 {linksConfig.enabled && (() => {
@@ -1348,6 +1483,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     messages={messages}
                     lang={lang}
                     onClose={() => setChatViewMode('chat')}
+                    onDeleteMessage={handleDeleteMessage}
                   />
                 ) : (
                   <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
@@ -1377,6 +1513,44 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       messages.map((m) => {
                         const isAdminOrSystem =
                           m.senderRole === 'admin' || m.senderRole === 'system';
+                        const isConfirmingDelete = confirmDeleteMsgId === m.id;
+                        const isDeletingThis = deletingMsgId === m.id;
+
+                        const deleteControls = isConfirmingDelete ? (
+                          <span className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={isDeletingThis}
+                              onClick={() => void handleDeleteMessage(m)}
+                              className="px-2 py-0.5 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer disabled:opacity-50"
+                            >
+                              {isDeletingThis
+                                ? '...'
+                                : lang === 'bn'
+                                  ? 'মুছুন'
+                                  : 'Delete'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteMsgId(null)}
+                              className="px-1.5 py-0.5 text-[11px] font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+                            >
+                              {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteMsgId(m.id)}
+                            aria-label={lang === 'bn' ? 'মেসেজ মুছুন' : 'Delete message'}
+                            title={lang === 'bn' ? 'মেসেজ মুছুন' : 'Delete message'}
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>{lang === 'bn' ? 'মুছুন' : 'Delete'}</span>
+                          </button>
+                        );
+
                         if (isAdminOrSystem) {
                           return (
                             <div key={m.id} className="flex justify-end">
@@ -1393,12 +1567,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     isOwn={m.senderRole === 'admin'}
                                   />
                                 </div>
-                                <span className="text-[11px] text-slate-400 px-1 tabular-nums">
-                                  {m.senderRole === 'system'
-                                    ? `${lang === 'bn' ? 'অটো মেসেজ' : 'Auto Reply'} · `
-                                    : ''}
-                                  {formatMessageTime(m.createdAt, lang)}
-                                </span>
+                                <div className="flex items-center gap-2 px-1">
+                                  {deleteControls}
+                                  <span className="text-[11px] text-slate-400 tabular-nums">
+                                    {m.senderRole === 'system'
+                                      ? `${lang === 'bn' ? 'অটো মেসেজ' : 'Auto Reply'} · `
+                                      : ''}
+                                    {formatMessageTime(m.createdAt, lang)}
+                                  </span>
+                                </div>
                               </div>
                             </div>
                           );
@@ -1414,9 +1591,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               <div className="bg-slate-100 text-slate-900 px-4 py-2.5 rounded-2xl rounded-bl-sm">
                                 <MediaMessageContent message={m} isOwn={false} />
                               </div>
-                              <span className="block text-[11px] text-slate-400 px-1 tabular-nums">
-                                {formatMessageTime(m.createdAt, lang)}
-                              </span>
+                              <div className="flex items-center gap-2 px-1">
+                                <span className="text-[11px] text-slate-400 tabular-nums">
+                                  {formatMessageTime(m.createdAt, lang)}
+                                </span>
+                                {deleteControls}
+                              </div>
                             </div>
                           </div>
                         );

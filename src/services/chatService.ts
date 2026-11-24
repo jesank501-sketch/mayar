@@ -4,6 +4,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   increment,
   serverTimestamp,
   setDoc,
@@ -19,6 +20,7 @@ import {
 import {
   AdminPresence,
   BroadcastCategory,
+  ChatMessage,
   DEFAULT_PAGE_SETTINGS,
   DEFAULT_SPONSORED_LINKS_CONFIG,
   FIELD_LIMITS,
@@ -474,6 +476,75 @@ export async function updateThreadAdminState(
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+function getMessagePreviewText(msg: Pick<ChatMessage, 'text' | 'messageType'>): string {
+  const clean = msg.text.trim();
+  if (clean) return clampText(clean, FIELD_LIMITS.THREAD_PREVIEW_MAX);
+  if (msg.messageType === 'image') return '📷 Photo shared';
+  if (msg.messageType === 'video') return '🎬 Video shared';
+  if (msg.messageType === 'audio') return '🎤 Audio message';
+  return '';
+}
+
+export async function deleteChatMessage(params: {
+  threadId: string;
+  messageId: string;
+  isLatestMessage: boolean;
+  remainingLatest: ChatMessage | null;
+}): Promise<void> {
+  const { threadId, messageId, isLatestMessage, remainingLatest } = params;
+  const msgPath = `threads/${threadId}/messages/${messageId}`;
+  try {
+    await deleteDoc(doc(db, 'threads', threadId, 'messages', messageId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, msgPath);
+  }
+
+  if (!isLatestMessage) return;
+
+  const threadPath = `threads/${threadId}`;
+  try {
+    await updateDoc(doc(db, 'threads', threadId), {
+      lastMessageText: remainingLatest ? getMessagePreviewText(remainingLatest) : '',
+      lastMessageSender: remainingLatest ? remainingLatest.senderRole : 'admin',
+      lastMessageAt: remainingLatest?.createdAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-blocking preview sync if thread was concurrently removed
+  }
+}
+
+export async function deleteChatThread(threadId: string): Promise<void> {
+  const messagesPath = `threads/${threadId}/messages`;
+  let messageRefs: Array<ReturnType<typeof doc>> = [];
+  try {
+    const snap = await getDocs(collection(db, 'threads', threadId, 'messages'));
+    messageRefs = snap.docs.map((d) => d.ref);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, messagesPath);
+  }
+
+  const chunkSize = 400;
+  try {
+    if (messageRefs.length === 0) {
+      await deleteDoc(doc(db, 'threads', threadId));
+      return;
+    }
+    for (let i = 0; i < messageRefs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      const chunk = messageRefs.slice(i, i + chunkSize);
+      chunk.forEach((ref) => batch.delete(ref));
+      const isLastChunk = i + chunkSize >= messageRefs.length;
+      if (isLastChunk) {
+        batch.delete(doc(db, 'threads', threadId));
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `threads/${threadId}`);
   }
 }
 

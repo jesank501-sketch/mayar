@@ -299,6 +299,11 @@ service cloud.firestore {
             ||
             // Action: Admin marks read or toggles resolved status
             incoming().diff(existing()).affectedKeys().hasOnly(['unreadByAdmin', 'status', 'updatedAt'])
+            ||
+            // Action: Admin refreshes thread preview after deleting a message
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'lastMessageText', 'lastMessageSender', 'lastMessageAt', 'updatedAt'
+            ])
           ))
           ||
           // Tier 2: Client owner actions

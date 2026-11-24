@@ -1,5 +1,5 @@
-import React from 'react';
-import { Film, Image as ImageIcon, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { Film, Image as ImageIcon, Trash2, X } from 'lucide-react';
 import { ChatMessage, Language } from '../types';
 import { formatRelativeTime } from '../utils/formatters';
 import { extractYouTubeEmbedUrl, isSafeMediaUrl } from '../utils/media';
@@ -8,13 +8,18 @@ interface MediaGalleryPanelProps {
   messages: ChatMessage[];
   lang: Language;
   onClose?: () => void;
+  onDeleteMessage?: (message: ChatMessage) => Promise<void> | void;
 }
 
 export const MediaGalleryPanel: React.FC<MediaGalleryPanelProps> = ({
   messages,
   lang,
   onClose,
+  onDeleteMessage,
 }) => {
+  const [confirmMsgId, setConfirmMsgId] = useState<string | null>(null);
+  const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null);
+
   const mediaItems = messages.filter(
     (m) =>
       (m.messageType === 'image' || m.messageType === 'video') &&
@@ -126,9 +131,49 @@ export const MediaGalleryPanel: React.FC<MediaGalleryPanelProps> = ({
                               ? 'ভিডিও'
                               : 'Video')}
                       </span>
-                      <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
-                        {formatRelativeTime(m.createdAt, lang)}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[11px] text-slate-400 tabular-nums">
+                          {formatRelativeTime(m.createdAt, lang)}
+                        </span>
+                        {onDeleteMessage && (
+                          confirmMsgId === m.id ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={deletingMsgId === m.id}
+                                onClick={async () => {
+                                  setDeletingMsgId(m.id);
+                                  try {
+                                    await onDeleteMessage(m);
+                                    setConfirmMsgId(null);
+                                  } finally {
+                                    setDeletingMsgId(null);
+                                  }
+                                }}
+                                className="px-2 py-0.5 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer disabled:opacity-50"
+                              >
+                                {lang === 'bn' ? 'মুছুন' : 'Delete'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmMsgId(null)}
+                                className="px-1.5 py-0.5 text-[11px] text-slate-500 hover:text-slate-800 cursor-pointer"
+                              >
+                                {lang === 'bn' ? 'না' : 'No'}
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmMsgId(m.id)}
+                              aria-label={lang === 'bn' ? 'মিডিয়া মুছুন' : 'Delete media'}
+                              className="p-1 text-slate-400 hover:text-red-600 rounded cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -139,3 +184,4 @@ export const MediaGalleryPanel: React.FC<MediaGalleryPanelProps> = ({
     </div>
   );
 };
+

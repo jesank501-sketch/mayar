@@ -112,7 +112,7 @@ function isValidWebPushSubscription(sub: unknown): sub is WebPushSubscription {
 
 const SAFE_ID_REGEX = /^[a-zA-Z0-9_\-]{1,128}$/;
 const SAFE_FILE_REGEX =
-  /^[a-zA-Z0-9_\-]+\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif)$/;
+  /^[a-zA-Z0-9_\-]+\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif|aac|amr|3gp)$/;
 
 const MIME_MAP: Record<
   string,
@@ -123,22 +123,32 @@ const MIME_MAP: Record<
   'image/png': { ext: 'png', kind: 'image', contentType: 'image/png' },
   'image/webp': { ext: 'webp', kind: 'image', contentType: 'image/webp' },
   'image/gif': { ext: 'gif', kind: 'image', contentType: 'image/gif' },
+  'image/avif': { ext: 'webp', kind: 'image', contentType: 'image/avif' },
+  'image/heic': { ext: 'jpg', kind: 'image', contentType: 'image/heic' },
+  'image/heif': { ext: 'jpg', kind: 'image', contentType: 'image/heif' },
   'video/mp4': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'video/webm': { ext: 'webm', kind: 'video', contentType: 'video/webm' },
   'video/quicktime': { ext: 'mov', kind: 'video', contentType: 'video/quicktime' },
+  'video/3gpp': { ext: '3gp', kind: 'video', contentType: 'video/3gpp' },
+  'video/x-matroska': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'audio/webm': { ext: 'webm', kind: 'audio', contentType: 'audio/webm' },
   'audio/mp4': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
   'audio/x-m4a': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
-  'audio/aac': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
+  'audio/aac': { ext: 'aac', kind: 'audio', contentType: 'audio/aac' },
+  'audio/x-aac': { ext: 'aac', kind: 'audio', contentType: 'audio/aac' },
   'audio/mpeg': { ext: 'mp3', kind: 'audio', contentType: 'audio/mpeg' },
   'audio/mp3': { ext: 'mp3', kind: 'audio', contentType: 'audio/mpeg' },
+  'audio/x-mpeg-3': { ext: 'mp3', kind: 'audio', contentType: 'audio/mpeg' },
   'audio/ogg': { ext: 'ogg', kind: 'audio', contentType: 'audio/ogg' },
+  'audio/opus': { ext: 'ogg', kind: 'audio', contentType: 'audio/ogg' },
   'audio/wav': { ext: 'wav', kind: 'audio', contentType: 'audio/wav' },
   'audio/wave': { ext: 'wav', kind: 'audio', contentType: 'audio/wav' },
   'audio/x-wav': { ext: 'wav', kind: 'audio', contentType: 'audio/wav' },
-  'audio/flac': { ext: 'flac', kind: 'audio', contentType: 'audio/flac' },
-  'audio/x-flac': { ext: 'flac', kind: 'audio', contentType: 'audio/flac' },
-  'audio/3gpp': { ext: 'm4a', kind: 'audio', contentType: 'audio/3gpp' },
+  'audio/flac': { ext: 'm4a', kind: 'audio', contentType: 'audio/flac' },
+  'audio/x-flac': { ext: 'm4a', kind: 'audio', contentType: 'audio/flac' },
+  'audio/3gpp': { ext: '3gp', kind: 'audio', contentType: 'audio/3gpp' },
+  'audio/3gpp2': { ext: '3gp', kind: 'audio', contentType: 'audio/3gpp2' },
+  'audio/amr': { ext: 'amr', kind: 'audio', contentType: 'audio/amr' },
 };
 
 function resolveRequestedMime(req: Pick<IncomingMessage, 'headers'>): string {
@@ -162,8 +172,11 @@ const EXT_TO_CONTENT_TYPE: Record<string, string> = {
   '.mov': 'video/quicktime',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
+  '.amr': 'audio/amr',
+  '.3gp': 'audio/3gpp',
 };
 
 interface VerifiedCaller {

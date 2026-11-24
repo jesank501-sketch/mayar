@@ -19,6 +19,7 @@ export default defineConfig(() => {
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
           'sw-push.js',
+          'firebase-messaging-sw.js',
         ],
         manifest: {
           id: '/',

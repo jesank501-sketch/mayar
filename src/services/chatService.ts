@@ -597,10 +597,20 @@ export async function ensureSponsoredLinksInitialized(admin: User): Promise<void
       await setDoc(ref, {
         enabled: DEFAULT_SPONSORED_LINKS_CONFIG.enabled,
         messagesBeforeLink: DEFAULT_SPONSORED_LINKS_CONFIG.messagesBeforeLink,
+        minStaySeconds: DEFAULT_SPONSORED_LINKS_CONFIG.minStaySeconds,
         links: DEFAULT_SPONSORED_LINKS_CONFIG.links,
         updatedAt: serverTimestamp(),
         updatedBy: admin.uid,
       });
+    } else {
+      const existing = snap.data() as Partial<SponsoredLinksConfig>;
+      if (typeof existing.minStaySeconds !== 'number') {
+        await updateDoc(ref, {
+          minStaySeconds: DEFAULT_SPONSORED_LINKS_CONFIG.minStaySeconds,
+          updatedAt: serverTimestamp(),
+          updatedBy: admin.uid,
+        });
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'settings/links');
@@ -621,9 +631,11 @@ export async function saveSponsoredLinksConfig(
   }
 
   const cleanInterval = Math.min(50, Math.max(1, Math.round(config.messagesBeforeLink || 5)));
+  const cleanMinStay = Math.min(120, Math.max(0, Math.round(config.minStaySeconds ?? 20)));
   const payload = {
     enabled: Boolean(config.enabled),
     messagesBeforeLink: cleanInterval,
+    minStaySeconds: cleanMinStay,
     links: cleanLinks,
     updatedAt: serverTimestamp(),
     updatedBy: admin.uid,

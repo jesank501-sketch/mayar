@@ -11,6 +11,8 @@ import {
 } from 'firebase/firestore';
 import {
   ArrowLeft,
+  Bell,
+  BellOff,
   Camera,
   Check,
   CheckCircle2,
@@ -29,6 +31,7 @@ import {
   Settings,
   Trash2,
   Video,
+  X,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
@@ -63,11 +66,19 @@ import {
   isSafeHttpsLink,
   resolveActiveLinkForUser,
 } from '../utils/linkRotation';
-import { dispatchAdminPushNotification } from '../utils/pushNotifications';
+import {
+  dispatchAdminPushNotification,
+  enableAndSubscribePushNotifications,
+  isNotificationSupported,
+  playMessageAlertTone,
+  showLocalNotification,
+  syncExistingPushSubscription,
+} from '../utils/pushNotifications';
 import { Avatar } from './Avatar';
 import { ChatComposer } from './ChatComposer';
 import { MediaGalleryPanel } from './MediaGalleryPanel';
 import { MediaMessageContent } from './MediaMessageContent';
+import { NotificationPermissionModal } from './NotificationPermissionModal';
 import { ProfilePhotoModal } from './ProfilePhotoModal';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -146,14 +157,74 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [linkStatesMap, setLinkStatesMap] = useState<Record<string, UserLinkState>>({});
   const [linksEnabledDraft, setLinksEnabledDraft] = useState(linksConfig.enabled);
   const [linksIntervalDraft, setLinksIntervalDraft] = useState(linksConfig.messagesBeforeLink);
+  const [linksMinStayDraft, setLinksMinStayDraft] = useState(linksConfig.minStaySeconds ?? 20);
   const [linksTextDraft, setLinksTextDraft] = useState(linksConfig.links.join('\n'));
   const [savingLinksConfig, setSavingLinksConfig] = useState(false);
   const [linksFeedback, setLinksFeedback] = useState<string | null>(null);
   const [linksError, setLinksError] = useState<string | null>(null);
   const [linkReviewSearch, setLinkReviewSearch] = useState('');
   const [assigningUserId, setAssigningUserId] = useState<string | null>(null);
+  const [notifPermission, setNotifPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >(() => (isNotificationSupported() ? Notification.permission : 'unsupported'));
+  const [enablingNotif, setEnablingNotif] = useState(false);
+  const [notifDismissed, setNotifDismissed] = useState(false);
+  const [notifModalOpen, setNotifModalOpen] = useState(false);
+  const [incomingThreadAlert, setIncomingThreadAlert] = useState<ChatThread | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const initializedThreadsRef = useRef(false);
+  const threadLastMsgMillisRef = useRef<Record<string, number>>({});
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  const sectionRef = useRef(section);
+  const langRef = useRef(lang);
+  const settingsRef = useRef(settings);
+
+  useEffect(() => {
+    selectedThreadIdRef.current = selectedThreadId;
+  }, [selectedThreadId]);
+  useEffect(() => {
+    sectionRef.current = section;
+  }, [section]);
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    if (isNotificationSupported()) {
+      setNotifPermission(Notification.permission);
+    }
+    void syncExistingPushSubscription(user);
+  }, [user]);
+
+  const handleEnableAdminNotifications = async (): Promise<
+    NotificationPermission | 'unsupported'
+  > => {
+    if (enablingNotif) return notifPermission;
+    setEnablingNotif(true);
+    try {
+      const res = await enableAndSubscribePushNotifications(user);
+      setNotifPermission(res);
+      if (res === 'granted') {
+        void showLocalNotification({
+          title: settings.pageName,
+          body:
+            lang === 'bn'
+              ? 'অ্যাডমিন অ্যালার্ট চালু! নতুন ইউজার মেসেজ দিলেই সাথে সাথে নোটিফিকেশন পাবেন।'
+              : 'Admin alerts enabled! You will be notified immediately when users send messages.',
+          tag: 'admin-notif-enabled',
+        });
+      } else {
+        setNotifModalOpen(true);
+      }
+      return res;
+    } finally {
+      setEnablingNotif(false);
+    }
+  };
 
   useEffect(() => {
     setSettingsForm(settings);
@@ -162,6 +233,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   useEffect(() => {
     setLinksEnabledDraft(linksConfig.enabled);
     setLinksIntervalDraft(linksConfig.messagesBeforeLink);
+    setLinksMinStayDraft(linksConfig.minStaySeconds ?? 20);
     setLinksTextDraft(linksConfig.links.join('\n'));
   }, [linksConfig]);
 
@@ -233,6 +305,45 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         setThreads(list);
         setHasMoreThreads(snap.docs.length >= threadLimit);
         setLoadingThreads(false);
+
+        if (!initializedThreadsRef.current) {
+          const initialMap: Record<string, number> = {};
+          list.forEach((t) => {
+            initialMap[t.id] = t.lastMessageAt ? t.lastMessageAt.toMillis() : 0;
+          });
+          threadLastMsgMillisRef.current = initialMap;
+          initializedThreadsRef.current = true;
+        } else {
+          list.forEach((t) => {
+            const msgMs = t.lastMessageAt ? t.lastMessageAt.toMillis() : 0;
+            const prevMs = threadLastMsgMillisRef.current[t.id] ?? 0;
+            if (msgMs > prevMs) {
+              threadLastMsgMillisRef.current[t.id] = msgMs;
+              const isRecent = Date.now() - msgMs < 120_000;
+              if (t.lastMessageSender === 'client' && isRecent) {
+                playMessageAlertTone();
+                const isViewingThisThread =
+                  sectionRef.current === 'inbox' && selectedThreadIdRef.current === t.id;
+                if (!isViewingThisThread) {
+                  setIncomingThreadAlert(t);
+                }
+                const shouldShowOsNotif =
+                  document.visibilityState !== 'visible' ||
+                  !document.hasFocus() ||
+                  !isViewingThisThread;
+                if (shouldShowOsNotif) {
+                  void showLocalNotification({
+                    title: `${t.clientName} · ${settingsRef.current.pageName}`,
+                    body:
+                      t.lastMessageText ||
+                      (langRef.current === 'bn' ? 'নতুন মেসেজ পাঠিয়েছেন' : 'Sent a new message'),
+                    tag: `admin-thread-${t.id}`,
+                  });
+                }
+              }
+            }
+          });
+        }
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'threads');
@@ -548,6 +659,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       await saveSponsoredLinksConfig(user, {
         enabled: linksEnabledDraft,
         messagesBeforeLink: linksIntervalDraft,
+        minStaySeconds: linksMinStayDraft,
         links: validLinks,
       });
       setLinksFeedback(
@@ -693,6 +805,39 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             </option>
           </select>
 
+          {notifPermission !== 'unsupported' && notifPermission !== 'granted' && (
+            <button
+              type="button"
+              onClick={() => {
+                if (notifPermission === 'denied') {
+                  setNotifDismissed(false);
+                  setNotifModalOpen(true);
+                } else {
+                  void handleEnableAdminNotifications();
+                }
+              }}
+              disabled={enablingNotif}
+              title={
+                lang === 'bn' ? 'নোটিফিকেশন চালু করুন' : 'Enable incoming alerts'
+              }
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {notifPermission === 'denied' ? (
+                <BellOff className="w-3.5 h-3.5 text-amber-600" />
+              ) : (
+                <Bell className="w-3.5 h-3.5" />
+              )}
+              <span className="hidden lg:inline">
+                {notifPermission === 'denied'
+                  ? lang === 'bn'
+                    ? 'ব্লক'
+                    : 'Blocked'
+                  : lang === 'bn'
+                    ? 'অ্যালার্ট চালু'
+                    : 'Alerts On'}
+              </span>
+            </button>
+          )}
           <PWAInstallButton lang={lang} variant="compact" />
           <button
             type="button"
@@ -761,6 +906,85 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </button>
       </div>
 
+      {/* Incoming User Message Alert Banner (Admin) */}
+      {incomingThreadAlert && (
+        <div className="bg-emerald-50 border-b border-emerald-200 px-3 sm:px-6 py-2 flex items-center justify-between gap-2 text-xs text-emerald-950 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setSection('inbox');
+              handleSelectThread(incomingThreadAlert);
+              setIncomingThreadAlert(null);
+            }}
+            className="flex items-center gap-2 font-semibold truncate text-left cursor-pointer"
+          >
+            <Bell className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="truncate">
+              {incomingThreadAlert.clientName}:{' '}
+              {incomingThreadAlert.lastMessageText ||
+                (lang === 'bn' ? 'নতুন মেসেজ পাঠিয়েছেন' : 'New message')}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIncomingThreadAlert(null)}
+            className="text-emerald-700 hover:text-emerald-900 cursor-pointer shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Admin 1-Tap Notification Opt-In Banner */}
+      {!notifDismissed &&
+        (notifPermission === 'default' || notifPermission === 'denied') && (
+          <div className="bg-blue-50 border-b border-blue-200 px-3 sm:px-6 py-2 flex items-center justify-between gap-2 text-xs text-blue-950 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              {notifPermission === 'denied' ? (
+                <BellOff className="w-4 h-4 text-amber-600 shrink-0" />
+              ) : (
+                <Bell className="w-4 h-4 text-blue-600 shrink-0" />
+              )}
+              <span className="truncate font-medium">
+                {notifPermission === 'denied'
+                  ? lang === 'bn'
+                    ? 'নোটিফিকেশন বন্ধ — ইউজারের মেসেজ অ্যালার্ট পেতে ব্রাউজার সেটিংস থেকে অনুমতি দিন।'
+                    : 'Notifications blocked — enable them in browser settings for instant user alerts.'
+                  : lang === 'bn'
+                    ? 'ইউজার মেসেজ দিলেই সাথে সাথে অ্যালার্ট পেতে নোটিফিকেশন চালু করুন'
+                    : 'Turn on notifications for instant alerts when users message you'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {notifPermission === 'default' ? (
+                <button
+                  type="button"
+                  onClick={() => void handleEnableAdminNotifications()}
+                  disabled={enablingNotif}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg cursor-pointer"
+                >
+                  {lang === 'bn' ? 'চালু করুন' : 'Turn On'}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setNotifModalOpen(true)}
+                  className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg cursor-pointer"
+                >
+                  {lang === 'bn' ? 'চালু করার নিয়ম' : 'Fix Alerts'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setNotifDismissed(true)}
+                className="p-1 text-slate-500 hover:bg-blue-100 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
       {/* SECTION 1: MESSENGER ADMIN INBOX */}
       {section === 'inbox' && (
         <div className="flex-1 flex min-h-0 max-w-7xl w-full mx-auto bg-white lg:my-4 lg:rounded-2xl lg:border lg:border-slate-200 lg:shadow-sm overflow-hidden">
@@ -768,7 +992,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           <aside
             className={`${
               selectedThreadId ? 'hidden md:flex' : 'flex'
-            } flex-col w-full md:w-84 lg:w-96 border-r border-slate-200 bg-white shrink-0`}
+            } flex-col min-h-0 w-full md:w-84 lg:w-96 border-r border-slate-200 bg-white shrink-0`}
           >
             <div className="p-4 border-b border-slate-200 space-y-3">
               <div className="flex items-center justify-between">
@@ -910,7 +1134,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           <section
             className={`${
               selectedThreadId ? 'flex' : 'hidden md:flex'
-            } flex-1 flex-col min-w-0 bg-white`}
+            } flex-1 flex-col min-w-0 min-h-0 bg-white`}
           >
             {!selectedThread ? (
               <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
@@ -1126,7 +1350,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     onClose={() => setChatViewMode('chat')}
                   />
                 ) : (
-                  <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
+                  <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
                     {hasMoreMessages && (
                       <div className="flex justify-center">
                         <button
@@ -1502,29 +1726,57 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   </button>
                 </div>
 
-                <div>
-                  <label
-                    htmlFor="links-interval"
-                    className="block text-xs font-semibold text-slate-700 mb-1.5"
-                  >
-                    {lang === 'bn'
-                      ? 'কতটি মেসেজ দেওয়ার পর লিংক অপশন আসবে'
-                      : 'Messages before link button appears'}
-                  </label>
-                  <input
-                    id="links-interval"
-                    type="number"
-                    min={1}
-                    max={50}
-                    required
-                    value={linksIntervalDraft}
-                    onChange={(e) =>
-                      setLinksIntervalDraft(
-                        Math.min(50, Math.max(1, Number(e.target.value) || 5)),
-                      )
-                    }
-                    className="w-32 px-3.5 py-2 text-sm font-mono-tabular bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:outline-none"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label
+                      htmlFor="links-interval"
+                      className="block text-xs font-semibold text-slate-700 mb-1.5"
+                    >
+                      {lang === 'bn'
+                        ? 'কতটি মেসেজ পর লিংক আসবে'
+                        : 'Messages before link button'}
+                    </label>
+                    <input
+                      id="links-interval"
+                      type="number"
+                      min={1}
+                      max={50}
+                      required
+                      value={linksIntervalDraft}
+                      onChange={(e) =>
+                        setLinksIntervalDraft(
+                          Math.min(50, Math.max(1, Number(e.target.value) || 5)),
+                        )
+                      }
+                      className="w-full px-3.5 py-2 text-sm font-mono-tabular bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="links-min-stay"
+                      className="block text-xs font-semibold text-slate-700 mb-1.5"
+                    >
+                      {lang === 'bn'
+                        ? 'লিংকে সর্বনিম্ন থাকার সময় (সেকেন্ড)'
+                        : 'Min stay on link (seconds)'}
+                    </label>
+                    <input
+                      id="links-min-stay"
+                      type="number"
+                      min={0}
+                      max={120}
+                      required
+                      value={linksMinStayDraft}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setLinksMinStayDraft(
+                          Number.isFinite(val) ? Math.min(120, Math.max(0, val)) : 20,
+                        );
+                      }}
+                      className="w-full px-3.5 py-2 text-sm font-mono-tabular bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
                 </div>
 
                 <div>
@@ -1941,6 +2193,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         displayName={settingsForm.pageName}
         lang={lang}
         onSavePhoto={handleSaveAdminPhoto}
+      />
+
+      <NotificationPermissionModal
+        isOpen={notifModalOpen}
+        onClose={() => setNotifModalOpen(false)}
+        permission={notifPermission}
+        lang={lang}
+        enabling={enablingNotif}
+        onRetryPermission={handleEnableAdminNotifications}
       />
     </div>
   );

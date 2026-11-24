@@ -166,7 +166,7 @@
         },
         "mediaUrl": {
           "type": "string",
-          "maxLength": 1000
+          "maxLength": 900000
         },
         "mediaMimeType": {
           "type": "string",
@@ -328,6 +328,9 @@
         "messagesBeforeLink": {
           "type": "integer"
         },
+        "minStaySeconds": {
+          "type": "integer"
+        },
         "links": {
           "type": "array",
           "items": {
@@ -388,6 +391,32 @@
         "lastClickedLink",
         "updatedAt"
       ]
+    },
+    "FcmTokenRecord": {
+      "title": "FcmTokenRecord",
+      "description": "Firebase Cloud Messaging device registration tokens for push notifications.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 500
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "tokens", "updatedAt"]
     }
   },
   "firestore": {
@@ -422,6 +451,10 @@
     "/linkStates/{userId}": {
       "schema": { "$ref": "#/entities/UserLinkState" },
       "description": "Per-user sponsored link cycle tracking and admin-assigned starting link."
+    },
+    "/fcmTokens/{userId}": {
+      "schema": { "$ref": "#/entities/FcmTokenRecord" },
+      "description": "Per-user Firebase Cloud Messaging push notification device tokens."
     }
   }
 }

@@ -1,4 +1,4 @@
-// Service Worker Web Push & Notification Click Handler for BartaConnect
+// Service Worker Web Push, FCM & Notification Click Handler for BartaConnect
 
 self.addEventListener('push', (event) => {
   if (!event.data) return;
@@ -12,11 +12,33 @@ self.addEventListener('push', (event) => {
 
   try {
     const parsed = event.data.json();
+    const fcmNotif = parsed && typeof parsed.notification === 'object' ? parsed.notification : null;
+    const fcmData = parsed && typeof parsed.data === 'object' ? parsed.data : null;
+
+    const rawTitle =
+      (typeof parsed.title === 'string' && parsed.title) ||
+      (fcmNotif && typeof fcmNotif.title === 'string' && fcmNotif.title) ||
+      (fcmData && typeof fcmData.title === 'string' && fcmData.title) ||
+      '';
+    const rawBody =
+      (typeof parsed.body === 'string' && parsed.body) ||
+      (fcmNotif && typeof fcmNotif.body === 'string' && fcmNotif.body) ||
+      (fcmData && typeof fcmData.body === 'string' && fcmData.body) ||
+      '';
+    const rawUrl =
+      (typeof parsed.url === 'string' && parsed.url) ||
+      (fcmData && typeof fcmData.url === 'string' && fcmData.url) ||
+      '/';
+    const rawTag =
+      (typeof parsed.tag === 'string' && parsed.tag) ||
+      (fcmData && typeof fcmData.tag === 'string' && fcmData.tag) ||
+      payload.tag;
+
     payload = {
-      title: typeof parsed.title === 'string' && parsed.title ? parsed.title : payload.title,
-      body: typeof parsed.body === 'string' && parsed.body ? parsed.body : payload.body,
-      url: typeof parsed.url === 'string' && parsed.url ? parsed.url : '/',
-      tag: typeof parsed.tag === 'string' && parsed.tag ? parsed.tag : payload.tag,
+      title: rawTitle || payload.title,
+      body: rawBody || payload.body,
+      url: rawUrl,
+      tag: rawTag,
     };
   } catch {
     try {

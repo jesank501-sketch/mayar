@@ -25,10 +25,12 @@ service cloud.firestore {
     }
 
     function isValidMediaUrl(url) {
-      return url is string && url.size() <= 1000 && (
+      return url is string && url.size() <= 900000 && (
         url == ''
-        || url.matches('^https://.*')
-        || url.matches('^/api/media/[a-zA-Z0-9_\\-]+/[a-zA-Z0-9_\\-]+\\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif)$')
+        || (url.size() <= 1000 && url.matches('^https://.*'))
+        || (url.size() <= 1000 && url.matches('^/api/media/[a-zA-Z0-9_\\-]+/[a-zA-Z0-9_\\-]+\\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif|aac|amr|3gp)$'))
+        || url.matches('^data:image/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$')
+        || url.matches('^data:audio/(webm|mp4|mpeg|mp3|ogg|wav|x-wav|aac|x-m4a|3gpp);base64,[A-Za-z0-9+/=]+$')
       );
     }
 
@@ -186,11 +188,12 @@ service cloud.firestore {
 
     function isValidSponsoredLinksConfig(data) {
       return data.keys().hasAll(['enabled', 'messagesBeforeLink', 'links', 'updatedAt', 'updatedBy'])
-        && data.keys().hasOnly(['enabled', 'messagesBeforeLink', 'links', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['enabled', 'messagesBeforeLink', 'links', 'minStaySeconds', 'updatedAt', 'updatedBy'])
         && data.enabled is bool
         && data.messagesBeforeLink is int
         && data.messagesBeforeLink >= 1
         && data.messagesBeforeLink <= 50
+        && (!('minStaySeconds' in data) || (data.minStaySeconds is int && data.minStaySeconds >= 0 && data.minStaySeconds <= 120))
         && data.links is list
         && data.links.size() >= 1
         && data.links.size() <= 20
@@ -213,6 +216,17 @@ service cloud.firestore {
         && data.cycleCount is int && data.cycleCount >= 0 && data.cycleCount <= 100000
         && isValidOptionalHttpsLink(data.assignedFirstLink)
         && isValidOptionalHttpsLink(data.lastClickedLink)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFcmTokenRecord(data) {
+      return data.keys().hasAll(['userId', 'tokens', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'tokens', 'updatedAt'])
+        && isValidId(data.userId)
+        && data.tokens is list
+        && data.tokens.size() >= 0
+        && data.tokens.size() <= 5
+        && (data.tokens.size() == 0 || (data.tokens[0] is string && data.tokens[0].size() >= 20 && data.tokens[0].size() <= 500))
         && data.updatedAt is timestamp;
     }
 
@@ -395,7 +409,7 @@ service cloud.firestore {
           && incoming().updatedBy == request.auth.uid
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'enabled', 'messagesBeforeLink', 'links', 'updatedAt', 'updatedBy'
+            'enabled', 'messagesBeforeLink', 'minStaySeconds', 'links', 'updatedAt', 'updatedBy'
           ]))
       );
       allow delete: if false;
@@ -449,6 +463,26 @@ service cloud.firestore {
           ]))
         );
       allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // /fcmTokens/{userId} - Firebase Cloud Messaging device tokens per user
+    match /fcmTokens/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidFcmTokenRecord(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidFcmTokenRecord(incoming())
+        && incoming().userId == existing().userId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['tokens', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
     }
 
     // /test/connection - Boot connectivity probe

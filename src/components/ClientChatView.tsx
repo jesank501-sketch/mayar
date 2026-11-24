@@ -50,6 +50,7 @@ import { resolveActiveLinkForUser } from '../utils/linkRotation';
 import {
   enableAndSubscribePushNotifications,
   isNotificationSupported,
+  playMessageAlertTone,
   showLocalNotification,
   syncExistingPushSubscription,
 } from '../utils/pushNotifications';
@@ -57,6 +58,7 @@ import { Avatar } from './Avatar';
 import { ChatComposer } from './ChatComposer';
 import { MediaGalleryPanel } from './MediaGalleryPanel';
 import { MediaMessageContent } from './MediaMessageContent';
+import { NotificationPermissionModal } from './NotificationPermissionModal';
 import { ProfilePhotoModal } from './ProfilePhotoModal';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -136,6 +138,8 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   >(() => (isNotificationSupported() ? Notification.permission : 'unsupported'));
   const [enablingNotif, setEnablingNotif] = useState(false);
   const [notifDismissed, setNotifDismissed] = useState(false);
+  const [notifModalOpen, setNotifModalOpen] = useState(false);
+  const [incomingToast, setIncomingToast] = useState<string | null>(null);
 
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
   const prevTotalCountRef = useRef(0);
@@ -146,6 +150,16 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   const activeTabRef = useRef(activeTab);
   const settingsRef = useRef(settings);
   const langRef = useRef(lang);
+  const offlineAutoReplySentRef = useRef<string | null>(null);
+  const offlineMarkerStorageKey = `bartaconnect_offline_reply_${user.uid}`;
+
+  useEffect(() => {
+    try {
+      offlineAutoReplySentRef.current = window.localStorage.getItem(offlineMarkerStorageKey);
+    } catch {
+      offlineAutoReplySentRef.current = null;
+    }
+  }, [offlineMarkerStorageKey]);
 
   useEffect(() => {
     activeTabRef.current = activeTab;
@@ -159,6 +173,39 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
     langRef.current = lang;
   }, [lang]);
 
+  // Clear single-shot offline auto-reply marker once Admin replies or comes back online
+  useEffect(() => {
+    let lastAdminId = 'initial';
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].senderRole === 'admin') {
+        lastAdminId = messages[i].id;
+        break;
+      }
+    }
+    if (
+      offlineAutoReplySentRef.current &&
+      offlineAutoReplySentRef.current !== lastAdminId
+    ) {
+      offlineAutoReplySentRef.current = null;
+      try {
+        window.localStorage.removeItem(offlineMarkerStorageKey);
+      } catch {
+        // Ignore
+      }
+    }
+  }, [messages, offlineMarkerStorageKey]);
+
+  useEffect(() => {
+    if (adminOnline && offlineAutoReplySentRef.current) {
+      offlineAutoReplySentRef.current = null;
+      try {
+        window.localStorage.removeItem(offlineMarkerStorageKey);
+      } catch {
+        // Ignore
+      }
+    }
+  }, [adminOnline, offlineMarkerStorageKey]);
+
   // Sync Web Push subscription automatically if notification permission was previously granted
   useEffect(() => {
     if (isAdminPreview) return;
@@ -168,8 +215,10 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
     void syncExistingPushSubscription(user);
   }, [user, isAdminPreview]);
 
-  const handleEnableNotifications = async () => {
-    if (enablingNotif) return;
+  const handleEnableNotifications = async (): Promise<
+    NotificationPermission | 'unsupported'
+  > => {
+    if (enablingNotif) return notifPermission;
     setEnablingNotif(true);
     try {
       const result = await enableAndSubscribePushNotifications(user);
@@ -183,7 +232,10 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
               : 'Notifications enabled! You will be alerted whenever Admin replies.',
           tag: 'notif-enabled',
         });
+      } else {
+        setNotifModalOpen(true);
       }
+      return result;
     } finally {
       setEnablingNotif(false);
     }
@@ -283,26 +335,31 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
               !m.createdAt || Date.now() - m.createdAt.toMillis() < 120_000;
             if (!isRecent) return;
             if (m.senderRole === 'admin' || m.senderRole === 'system') {
+              const currentLang = langRef.current;
+              const preview =
+                m.messageType === 'audio'
+                  ? currentLang === 'bn'
+                    ? 'নতুন ভয়েস মেসেজ পাঠিয়েছেন'
+                    : 'Sent a voice message'
+                  : m.messageType === 'image'
+                    ? currentLang === 'bn'
+                      ? 'নতুন ছবি পাঠিয়েছেন'
+                      : 'Sent a photo'
+                    : m.messageType === 'video'
+                      ? currentLang === 'bn'
+                        ? 'নতুন ভিডিও পাঠিয়েছেন'
+                        : 'Sent a video'
+                      : m.text || (currentLang === 'bn' ? 'নতুন মেসেজ' : 'New message');
+
+              playMessageAlertTone();
+              if (activeTabRef.current !== 'all') {
+                setIncomingToast(preview);
+              }
               const shouldNotify =
                 document.visibilityState !== 'visible' ||
                 !document.hasFocus() ||
                 activeTabRef.current !== 'all';
               if (shouldNotify) {
-                const currentLang = langRef.current;
-                const preview =
-                  m.messageType === 'audio'
-                    ? currentLang === 'bn'
-                      ? 'নতুন ভয়েস মেসেজ পাঠিয়েছেন'
-                      : 'Sent a voice message'
-                    : m.messageType === 'image'
-                      ? currentLang === 'bn'
-                        ? 'নতুন ছবি পাঠিয়েছেন'
-                        : 'Sent a photo'
-                      : m.messageType === 'video'
-                        ? currentLang === 'bn'
-                          ? 'নতুন ভিডিও পাঠিয়েছেন'
-                          : 'Sent a video'
-                        : m.text || (currentLang === 'bn' ? 'নতুন মেসেজ' : 'New message');
                 void showLocalNotification({
                   title: settingsRef.current.pageName,
                   body: preview,
@@ -421,10 +478,34 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
     mediaUrl?: string;
     mediaMimeType?: string;
   }) => {
-    const lastMessage = messages[messages.length - 1];
-    const lastWasAutoOffline =
-      lastMessage?.senderRole === 'system' &&
-      lastMessage?.text === settings.offlineAutoReply;
+    let lastAdminIndex = -1;
+    let lastAdminId = 'initial';
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].senderRole === 'admin') {
+        lastAdminIndex = i;
+        lastAdminId = messages[i].id;
+        break;
+      }
+    }
+
+    const alreadySentOfflineSinceAdmin = messages
+      .slice(lastAdminIndex + 1)
+      .some((m) => m.senderRole === 'system' && m.text === settings.offlineAutoReply);
+
+    let savedMarker = offlineAutoReplySentRef.current;
+    if (!savedMarker) {
+      try {
+        savedMarker = window.localStorage.getItem(offlineMarkerStorageKey);
+      } catch {
+        savedMarker = null;
+      }
+    }
+    const shouldSendOfflineAutoReply =
+      !adminOnline &&
+      !isAdminPreview &&
+      !alreadySentOfflineSinceAdmin &&
+      savedMarker !== lastAdminId &&
+      Boolean(settings.offlineAutoReply.trim());
 
     await sendMessageAtomic({
       threadId: user.uid,
@@ -443,8 +524,14 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
       void recordClientMessageSentForLinkCycle(user.uid, userLinkState);
     }
 
-    // Non-blocking retention auto-reply if Admin is offline
-    if (!adminOnline && !lastWasAutoOffline && !isAdminPreview) {
+    // Strictly send offline auto-reply ONCE per offline stretch until Admin replies
+    if (shouldSendOfflineAutoReply) {
+      offlineAutoReplySentRef.current = lastAdminId;
+      try {
+        window.localStorage.setItem(offlineMarkerStorageKey, lastAdminId);
+      } catch {
+        // Ignore
+      }
       void sendOfflineAutoReplyIfPossible({
         user,
         settings,
@@ -554,7 +641,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
         <aside
           className={`${
             mobileShowSidebar ? 'flex' : 'hidden'
-          } md:flex flex-col w-full md:w-80 border-r border-slate-200 bg-white shrink-0`}
+          } md:flex flex-col min-h-0 w-full md:w-80 border-r border-slate-200 bg-white shrink-0`}
         >
           <div className="p-4 border-b border-slate-200">
             <h1 className="text-base font-bold text-slate-900">
@@ -719,7 +806,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
         <section
           className={`${
             mobileShowSidebar ? 'hidden' : 'flex'
-          } md:flex flex-1 flex-col min-w-0 bg-white`}
+          } md:flex flex-1 flex-col min-w-0 min-h-0 bg-white`}
         >
           {/* Chat Thread Header (Compact single header on mobile, spacious on desktop) */}
           <div className="px-3 md:px-6 py-2 md:py-3.5 border-b border-slate-200 flex items-center justify-between gap-2 md:gap-4 bg-white shrink-0 pt-safe">
@@ -790,6 +877,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                   onClick={() => {
                     if (notifPermission === 'denied') {
                       setNotifDismissed(false);
+                      setNotifModalOpen(true);
                     } else {
                       void handleEnableNotifications();
                     }
@@ -936,7 +1024,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {notifPermission === 'default' && (
+                  {notifPermission === 'default' ? (
                     <button
                       type="button"
                       onClick={() => void handleEnableNotifications()}
@@ -950,6 +1038,14 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                         : lang === 'bn'
                           ? 'চালু করুন'
                           : 'Turn On'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setNotifModalOpen(true)}
+                      className="min-h-[34px] px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                    >
+                      {lang === 'bn' ? 'চালু করার নিয়ম' : 'Fix Alerts'}
                     </button>
                   )}
                   <button
@@ -984,6 +1080,31 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
             </div>
           )}
 
+          {incomingToast && (
+            <div className="px-4 sm:px-6 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between gap-2 text-xs text-emerald-900 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('all');
+                  setIncomingToast(null);
+                }}
+                className="flex items-center gap-2 font-semibold truncate cursor-pointer text-left"
+              >
+                <Bell className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="truncate">
+                  {settings.pageName}: {incomingToast}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIncomingToast(null)}
+                className="text-emerald-700 hover:text-emerald-900 font-medium shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {activeTab === 'media' ? (
             <MediaGalleryPanel
               messages={messages}
@@ -991,7 +1112,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
               onClose={() => setActiveTab('all')}
             />
           ) : (
-            <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
               {hasMoreMessages && activeTab === 'all' && (
                 <div className="flex justify-center">
                   <button
@@ -1115,6 +1236,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                     linkUrl: activeRotatingLink,
                     messagesSentInCycle,
                     messagesBeforeLink: linksConfig.messagesBeforeLink,
+                    minStaySeconds: linksConfig.minStaySeconds,
                     onLinkVisited: async () => {
                       await completeClientLinkStep({
                         userId: user.uid,
@@ -1137,6 +1259,15 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
         displayName={clientDisplayName}
         lang={lang}
         onSavePhoto={handleSaveClientPhoto}
+      />
+
+      <NotificationPermissionModal
+        isOpen={notifModalOpen}
+        onClose={() => setNotifModalOpen(false)}
+        permission={notifPermission}
+        lang={lang}
+        enabling={enablingNotif}
+        onRetryPermission={handleEnableNotifications}
       />
     </div>
   );

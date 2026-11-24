@@ -79,6 +79,7 @@ export interface AdminPresence {
 export interface SponsoredLinksConfig {
   enabled: boolean;
   messagesBeforeLink: number;
+  minStaySeconds: number;
   links: string[];
   updatedAt?: Timestamp;
   updatedBy?: string;
@@ -108,6 +109,7 @@ export const DEFAULT_SPONSORED_LINKS: string[] = [
 export const DEFAULT_SPONSORED_LINKS_CONFIG: SponsoredLinksConfig = {
   enabled: true,
   messagesBeforeLink: 5,
+  minStaySeconds: 20,
   links: DEFAULT_SPONSORED_LINKS,
 };
 
@@ -131,7 +133,7 @@ export const FIELD_LIMITS = {
   EMAIL_MAX: 150,
   PHOTO_URL_MAX: 65536,
   MESSAGE_TEXT_MAX: 2000,
-  MEDIA_URL_MAX: 1000,
+  MEDIA_URL_MAX: 900000,
   MEDIA_MIME_MAX: 100,
   THREAD_PREVIEW_MAX: 500,
   BROADCAST_TITLE_MAX: 120,

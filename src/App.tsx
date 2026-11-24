@@ -116,6 +116,10 @@ export default function App() {
             enabled: data.enabled ?? DEFAULT_SPONSORED_LINKS_CONFIG.enabled,
             messagesBeforeLink:
               data.messagesBeforeLink ?? DEFAULT_SPONSORED_LINKS_CONFIG.messagesBeforeLink,
+            minStaySeconds:
+              typeof data.minStaySeconds === 'number'
+                ? data.minStaySeconds
+                : DEFAULT_SPONSORED_LINKS_CONFIG.minStaySeconds,
             links:
               Array.isArray(data.links) && data.links.length > 0
                 ? data.links

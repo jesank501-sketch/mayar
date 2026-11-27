@@ -32,9 +32,19 @@ export interface ChatThread {
   lastMessageAt: Timestamp;
   unreadByAdmin: number;
   unreadByClient: number;
+  clientLastReadAt?: Timestamp;
+  adminLastReadAt?: Timestamp;
   status: ThreadStatus;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+}
+
+export interface ReplyTarget {
+  messageId: string;
+  senderName: string;
+  senderRole: SenderRole;
+  text: string;
+  messageType: MessageType;
 }
 
 export interface ChatMessage {
@@ -47,6 +57,11 @@ export interface ChatMessage {
   text: string;
   mediaUrl: string;
   mediaMimeType: string;
+  replyToMessageId?: string;
+  replyToSenderName?: string;
+  replyToSenderRole?: SenderRole;
+  replyToText?: string;
+  replyToMessageType?: MessageType;
   createdAt: Timestamp;
 }
 
@@ -141,6 +156,7 @@ export const FIELD_LIMITS = {
   MESSAGE_TEXT_MAX: 2000,
   MEDIA_URL_MAX: 900000,
   MEDIA_MIME_MAX: 100,
+  REPLY_PREVIEW_MAX: 300,
   THREAD_PREVIEW_MAX: 500,
   BROADCAST_TITLE_MAX: 120,
   PAGE_NAME_MAX: 80,

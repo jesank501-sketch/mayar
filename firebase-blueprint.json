@@ -118,6 +118,14 @@
         "unreadByClient": {
           "type": "integer"
         },
+        "clientLastReadAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "adminLastReadAt": {
+          "type": "string",
+          "format": "date-time"
+        },
         "status": {
           "type": "string",
           "enum": ["open", "resolved"]
@@ -187,6 +195,29 @@
         "mediaMimeType": {
           "type": "string",
           "maxLength": 100
+        },
+        "replyToMessageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "replyToSenderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "replyToSenderRole": {
+          "type": "string",
+          "enum": ["client", "admin", "system"]
+        },
+        "replyToText": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "replyToMessageType": {
+          "type": "string",
+          "enum": ["text", "image", "video", "audio"]
         },
         "createdAt": {
           "type": "string",

@@ -27,6 +27,7 @@ import {
   MessageType,
   PresenceMode,
   PublicPageSettings,
+  ReplyTarget,
   SenderRole,
   SponsoredLinksConfig,
   ThreadStatus,
@@ -357,6 +358,7 @@ export async function sendMessageAtomic(params: {
   threadExists: boolean;
   senderPhotoOverride?: string;
   senderNameOverride?: string;
+  replyTo?: ReplyTarget | null;
 }): Promise<void> {
   const {
     threadId,
@@ -369,6 +371,7 @@ export async function sendMessageAtomic(params: {
     threadExists,
     senderPhotoOverride,
     senderNameOverride,
+    replyTo,
   } = params;
 
   const cleanText = clampText(text, FIELD_LIMITS.MESSAGE_TEXT_MAX);
@@ -439,6 +442,8 @@ export async function sendMessageAtomic(params: {
       lastMessageAt: serverTimestamp(),
       unreadByAdmin: senderRole === 'client' ? 1 : 0,
       unreadByClient: senderRole === 'admin' ? 1 : 0,
+      ...(senderRole === 'client' ? { clientLastReadAt: serverTimestamp() } : {}),
+      ...(senderRole === 'admin' ? { adminLastReadAt: serverTimestamp() } : {}),
       status: 'open',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -451,6 +456,7 @@ export async function sendMessageAtomic(params: {
       lastMessageSender: 'client',
       lastMessageAt: serverTimestamp(),
       unreadByAdmin: increment(1),
+      clientLastReadAt: serverTimestamp(),
       status: 'open',
       updatedAt: serverTimestamp(),
     });
@@ -469,10 +475,16 @@ export async function sendMessageAtomic(params: {
       lastMessageAt: serverTimestamp(),
       unreadByClient: increment(1),
       unreadByAdmin: 0,
+      adminLastReadAt: serverTimestamp(),
       status: 'open',
       updatedAt: serverTimestamp(),
     });
   }
+
+  const cleanReplyId =
+    replyTo?.messageId && /^[a-zA-Z0-9_\-]{1,128}$/.test(replyTo.messageId)
+      ? replyTo.messageId
+      : '';
 
   batch.set(newMessageRef, {
     threadId,
@@ -483,6 +495,19 @@ export async function sendMessageAtomic(params: {
     text: cleanText,
     mediaUrl: messageType === 'text' ? '' : cleanMediaUrl,
     mediaMimeType: messageType === 'text' ? '' : cleanMime,
+    ...(cleanReplyId && replyTo
+      ? {
+          replyToMessageId: cleanReplyId,
+          replyToSenderName: clampText(
+            replyTo.senderName,
+            FIELD_LIMITS.DISPLAY_NAME_MAX,
+            'User',
+          ),
+          replyToSenderRole: replyTo.senderRole,
+          replyToText: clampText(replyTo.text, FIELD_LIMITS.REPLY_PREVIEW_MAX),
+          replyToMessageType: replyTo.messageType,
+        }
+      : {}),
     createdAt: serverTimestamp(),
   });
 
@@ -527,6 +552,7 @@ export async function markThreadReadByClient(threadId: string): Promise<void> {
   try {
     await updateDoc(doc(db, 'threads', threadId), {
       unreadByClient: 0,
+      clientLastReadAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -537,11 +563,13 @@ export async function markThreadReadByClient(threadId: string): Promise<void> {
 export async function updateThreadAdminState(
   threadId: string,
   status: ThreadStatus,
+  markRead = true,
 ): Promise<void> {
   const path = `threads/${threadId}`;
   try {
     await updateDoc(doc(db, 'threads', threadId), {
       unreadByAdmin: 0,
+      ...(markRead ? { adminLastReadAt: serverTimestamp() } : {}),
       status,
       updatedAt: serverTimestamp(),
     });

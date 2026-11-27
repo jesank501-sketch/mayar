@@ -16,6 +16,7 @@ import {
   BellOff,
   Camera,
   Check,
+  CheckCheck,
   CheckCircle2,
   Edit3,
   ExternalLink,
@@ -27,6 +28,7 @@ import {
   Lock,
   LogOut,
   Megaphone,
+  Reply,
   RotateCcw,
   Search,
   Settings,
@@ -60,6 +62,7 @@ import {
   MessageType,
   PresenceMode,
   PublicPageSettings,
+  ReplyTarget,
   SponsoredLinksConfig,
   UserLinkState,
 } from '../types';
@@ -86,6 +89,7 @@ import { MediaMessageContent } from './MediaMessageContent';
 import { NotificationPermissionModal } from './NotificationPermissionModal';
 import { ProfilePhotoModal } from './ProfilePhotoModal';
 import { PWAInstallButton } from './PWAInstallButton';
+import { SwipeableMessageRow } from './SwipeableMessageRow';
 
 interface AdminDashboardViewProps {
   user: User;
@@ -183,8 +187,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [selectedThreadPushReady, setSelectedThreadPushReady] = useState<boolean | null>(null);
   const [pushDeliveryNotice, setPushDeliveryNotice] = useState<string | null>(null);
   const [incomingThreadAlert, setIncomingThreadAlert] = useState<ChatThread | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ReplyTarget | null>(null);
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const lastMarkedAdminReadKeyRef = useRef<string>('');
+  const markingAdminReadRef = useRef(false);
   const initializedThreadsRef = useRef(false);
   const threadLastMsgMillisRef = useRef<Record<string, number>>({});
   const selectedThreadIdRef = useRef(selectedThreadId);
@@ -446,6 +455,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               text: raw.text || '',
               mediaUrl: raw.mediaUrl || '',
               mediaMimeType: raw.mediaMimeType || '',
+              ...(raw.replyToMessageId
+                ? {
+                    replyToMessageId: raw.replyToMessageId,
+                    replyToSenderName: raw.replyToSenderName || 'User',
+                    replyToSenderRole: raw.replyToSenderRole || 'client',
+                    replyToText: raw.replyToText || '',
+                    replyToMessageType: raw.replyToMessageType || 'text',
+                  }
+                : {}),
               createdAt: raw.createdAt as Timestamp,
             };
           })
@@ -472,12 +490,65 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     [messages],
   );
 
-  // Clear unreadByAdmin when admin views an unread thread
-  useEffect(() => {
-    if (selectedThread && selectedThread.unreadByAdmin > 0) {
-      void updateThreadAdminState(selectedThread.id, selectedThread.status);
+  const { lastAdminMsgId, lastSeenAdminMsgId } = useMemo(() => {
+    let lastId: string | null = null;
+    let lastSeenId: string | null = null;
+    const clientReadMs = selectedThread?.clientLastReadAt
+      ? selectedThread.clientLastReadAt.toMillis()
+      : null;
+    for (const m of messages) {
+      if (m.senderRole !== 'admin') continue;
+      lastId = m.id;
+      const isSeen = Boolean(
+        m.createdAt &&
+          selectedThread &&
+          (clientReadMs !== null
+            ? m.createdAt.toMillis() <= clientReadMs
+            : selectedThread.unreadByClient === 0),
+      );
+      if (isSeen) {
+        lastSeenId = m.id;
+      }
     }
-  }, [selectedThread]);
+    return { lastAdminMsgId: lastId, lastSeenAdminMsgId: lastSeenId };
+  }, [messages, selectedThread]);
+
+  // Clear unreadByAdmin and update adminLastReadAt only when admin actively views the chat
+  useEffect(() => {
+    const syncAdminReadReceipt = () => {
+      if (section !== 'inbox' || chatViewMode !== 'chat' || !selectedThread) return;
+      if (document.visibilityState !== 'visible') return;
+      const lastMsgMs = selectedThread.lastMessageAt
+        ? selectedThread.lastMessageAt.toMillis()
+        : 0;
+      const adminReadMs = selectedThread.adminLastReadAt
+        ? selectedThread.adminLastReadAt.toMillis()
+        : 0;
+      const needsReadUpdate =
+        selectedThread.unreadByAdmin > 0 ||
+        (selectedThread.lastMessageSender === 'client' &&
+          lastMsgMs > 0 &&
+          adminReadMs < lastMsgMs);
+
+      if (!needsReadUpdate || markingAdminReadRef.current) return;
+      const readKey = `${selectedThread.id}:${lastMsgMs}:${selectedThread.unreadByAdmin}`;
+      if (lastMarkedAdminReadKeyRef.current === readKey) return;
+
+      markingAdminReadRef.current = true;
+      lastMarkedAdminReadKeyRef.current = readKey;
+      void updateThreadAdminState(selectedThread.id, selectedThread.status, true).finally(() => {
+        markingAdminReadRef.current = false;
+      });
+    };
+
+    syncAdminReadReceipt();
+    document.addEventListener('visibilitychange', syncAdminReadReceipt);
+    window.addEventListener('focus', syncAdminReadReceipt);
+    return () => {
+      document.removeEventListener('visibilitychange', syncAdminReadReceipt);
+      window.removeEventListener('focus', syncAdminReadReceipt);
+    };
+  }, [selectedThread, section, chatViewMode]);
 
   // Monitor whether the selected client has registered mobile/browser Web Push
   useEffect(() => {
@@ -528,6 +599,41 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     [threads],
   );
 
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleJumpToMessage = (messageId: string) => {
+    const targetEl = document.getElementById(`msg-${messageId}`);
+    if (!targetEl) return;
+    targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMsgId(messageId);
+    if (highlightTimerRef.current) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedMsgId((prev) => (prev === messageId ? null : prev));
+    }, 1600);
+  };
+
+  const handleSelectAdminReply = (m: ChatMessage) => {
+    const senderLabel =
+      m.senderRole === 'admin' || m.senderRole === 'system'
+        ? m.senderName || settings.pageName
+        : m.senderName || selectedThread?.clientName || 'Client';
+    setReplyingTo({
+      messageId: m.id,
+      senderName: senderLabel,
+      senderRole: m.senderRole,
+      text: (m.text || '').slice(0, FIELD_LIMITS.REPLY_PREVIEW_MAX),
+      messageType: m.messageType || 'text',
+    });
+  };
+
   const handleSelectThread = (thread: ChatThread) => {
     setSelectedThreadId(thread.id);
     setMsgLimit(60);
@@ -535,6 +641,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setVideoCallNotice(false);
     setConfirmDeleteMsgId(null);
     setConfirmDeleteThreadId(null);
+    setReplyingTo(null);
   };
 
   const handleDeleteMessage = async (message: ChatMessage) => {
@@ -551,6 +658,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         remainingLatest,
       });
       setConfirmDeleteMsgId(null);
+      if (replyingTo?.messageId === message.id) {
+        setReplyingTo(null);
+      }
     } finally {
       setDeletingMsgId(null);
     }
@@ -565,6 +675,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (selectedThreadId === threadId) {
         setSelectedThreadId(null);
         setMessages([]);
+        setReplyingTo(null);
       }
     } finally {
       setDeletingThreadId(null);
@@ -576,6 +687,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     text: string;
     mediaUrl?: string;
     mediaMimeType?: string;
+    replyTo?: ReplyTarget | null;
   }) => {
     if (!selectedThread) return;
     await sendMessageAtomic({
@@ -586,8 +698,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       messageType: payload.messageType,
       mediaUrl: payload.mediaUrl,
       mediaMimeType: payload.mediaMimeType,
+      replyTo: payload.replyTo ?? replyingTo,
       threadExists: true,
     });
+    setReplyingTo(null);
     setChatViewMode('chat');
 
     const pushPreview =
@@ -1201,11 +1315,35 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     ? 'নতুন ইউজার যুক্ত হয়েছে'
                                     : 'New user connected'}
                               </p>
-                              {isUnread && (
-                                <span className="text-[11px] font-bold text-blue-600 tabular-nums shrink-0">
-                                  {t.unreadByAdmin}
-                                </span>
-                              )}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {t.lastMessageSender === 'admin' &&
+                                  (t.unreadByClient === 0 ? (
+                                    <span
+                                      title={
+                                        lang === 'bn' ? 'ক্লায়েন্ট দেখেছেন' : 'Seen by client'
+                                      }
+                                      className="inline-flex items-center text-blue-600"
+                                    >
+                                      <CheckCheck className="w-3.5 h-3.5" />
+                                    </span>
+                                  ) : (
+                                    <span
+                                      title={
+                                        lang === 'bn'
+                                          ? 'পাঠানো হয়েছে (এখনো দেখেননি)'
+                                          : 'Sent (Not seen yet)'
+                                      }
+                                      className="inline-flex items-center text-slate-400"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                    </span>
+                                  ))}
+                                {isUnread && (
+                                  <span className="text-[11px] font-bold text-blue-600 tabular-nums">
+                                    {t.unreadByAdmin}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </button>
@@ -1343,6 +1481,27 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               <>
                                 <BellOff className="w-2.5 h-2.5" />
                                 {lang === 'bn' ? 'ফোনে পুশ বন্ধ' : 'Push Off'}
+                              </>
+                            )}
+                          </span>
+                        )}
+                        {selectedThread.lastMessageSender === 'admin' && (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                              selectedThread.unreadByClient === 0
+                                ? 'bg-blue-50 text-blue-700'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {selectedThread.unreadByClient === 0 ? (
+                              <>
+                                <CheckCheck className="w-2.5 h-2.5" />
+                                {lang === 'bn' ? 'দেখেছেন' : 'Seen'}
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-2.5 h-2.5" />
+                                {lang === 'bn' ? 'পাঠানো হয়েছে' : 'Sent'}
                               </>
                             )}
                           </span>
@@ -1611,6 +1770,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         const isConfirmingDelete = confirmDeleteMsgId === m.id;
                         const isDeletingThis = deletingMsgId === m.id;
 
+                        const replyButton = (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectAdminReply(m)}
+                            aria-label={lang === 'bn' ? 'রিপ্লাই করুন' : 'Reply'}
+                            title={lang === 'bn' ? 'রিপ্লাই করুন' : 'Reply'}
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                          >
+                            <Reply className="w-3 h-3" />
+                            <span>{lang === 'bn' ? 'রিপ্লাই' : 'Reply'}</span>
+                          </button>
+                        );
+
                         const deleteControls = isConfirmingDelete ? (
                           <span className="inline-flex items-center gap-1">
                             <button
@@ -1647,53 +1819,102 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         );
 
                         if (isAdminOrSystem) {
+                          const isLastSeenByClient =
+                            m.senderRole === 'admin' && lastSeenAdminMsgId === m.id;
+                          const isLastSentPending =
+                            m.senderRole === 'admin' &&
+                            lastAdminMsgId === m.id &&
+                            lastAdminMsgId !== lastSeenAdminMsgId;
+
                           return (
-                            <div key={m.id} className="flex justify-end">
-                              <div className="max-w-[82%] sm:max-w-lg space-y-1 flex flex-col items-end">
-                                <div
-                                  className={`px-4 py-2.5 rounded-2xl rounded-br-sm ${
-                                    m.senderRole === 'system'
-                                      ? 'bg-slate-200 text-slate-800'
-                                      : 'bg-blue-600 text-white'
-                                  }`}
-                                >
-                                  <MediaMessageContent
-                                    message={m}
-                                    isOwn={m.senderRole === 'admin'}
-                                  />
-                                </div>
-                                <div className="flex items-center gap-2 px-1">
-                                  {deleteControls}
-                                  <span className="text-[11px] text-slate-400 tabular-nums">
-                                    {m.senderRole === 'system'
-                                      ? `${lang === 'bn' ? 'অটো মেসেজ' : 'Auto Reply'} · `
-                                      : ''}
-                                    {formatMessageTime(m.createdAt, lang)}
-                                  </span>
+                            <SwipeableMessageRow
+                              key={m.id}
+                              messageId={m.id}
+                              isOwn={true}
+                              isHighlighted={highlightedMsgId === m.id}
+                              onSwipeReply={() => handleSelectAdminReply(m)}
+                            >
+                              <div className="flex justify-end">
+                                <div className="max-w-[82%] sm:max-w-lg space-y-1 flex flex-col items-end">
+                                  <div
+                                    className={`px-4 py-2.5 rounded-2xl rounded-br-sm ${
+                                      m.senderRole === 'system'
+                                        ? 'bg-slate-200 text-slate-800'
+                                        : 'bg-blue-600 text-white'
+                                    }`}
+                                  >
+                                    <MediaMessageContent
+                                      message={m}
+                                      isOwn={m.senderRole === 'admin'}
+                                      lang={lang}
+                                      onJumpToMessage={handleJumpToMessage}
+                                    />
+                                  </div>
+                                  <div className="flex flex-wrap items-center justify-end gap-2 px-1">
+                                    {replyButton}
+                                    {deleteControls}
+                                    <span className="text-[11px] text-slate-400 tabular-nums">
+                                      {m.senderRole === 'system'
+                                        ? `${lang === 'bn' ? 'অটো মেসেজ' : 'Auto Reply'} · `
+                                        : ''}
+                                      {formatMessageTime(m.createdAt, lang)}
+                                    </span>
+                                  </div>
+                                  {isLastSeenByClient && (
+                                    <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-blue-600">
+                                      <Avatar
+                                        src={selectedThread.clientPhotoURL}
+                                        name={selectedThread.clientName}
+                                        size="xs"
+                                      />
+                                      <CheckCheck className="w-3.5 h-3.5 shrink-0" />
+                                      <span>{lang === 'bn' ? 'দেখেছেন' : 'Seen'}</span>
+                                    </div>
+                                  )}
+                                  {isLastSentPending && (
+                                    <div className="flex items-center gap-1 px-1 text-[11px] text-slate-400">
+                                      <Check className="w-3 h-3 shrink-0" />
+                                      <span>{lang === 'bn' ? 'পাঠানো হয়েছে' : 'Sent'}</span>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
-                            </div>
+                            </SwipeableMessageRow>
                           );
                         }
                         return (
-                          <div key={m.id} className="flex items-end gap-2.5 max-w-[85%] sm:max-w-lg">
-                            <Avatar
-                              src={selectedThread.clientPhotoURL}
-                              name={selectedThread.clientName}
-                              size="sm"
-                            />
-                            <div className="space-y-1">
-                              <div className="bg-slate-100 text-slate-900 px-4 py-2.5 rounded-2xl rounded-bl-sm">
-                                <MediaMessageContent message={m} isOwn={false} />
-                              </div>
-                              <div className="flex items-center gap-2 px-1">
-                                <span className="text-[11px] text-slate-400 tabular-nums">
-                                  {formatMessageTime(m.createdAt, lang)}
-                                </span>
-                                {deleteControls}
+                          <SwipeableMessageRow
+                            key={m.id}
+                            messageId={m.id}
+                            isOwn={false}
+                            isHighlighted={highlightedMsgId === m.id}
+                            onSwipeReply={() => handleSelectAdminReply(m)}
+                          >
+                            <div className="flex items-end gap-2.5 max-w-[85%] sm:max-w-lg">
+                              <Avatar
+                                src={selectedThread.clientPhotoURL}
+                                name={selectedThread.clientName}
+                                size="sm"
+                              />
+                              <div className="space-y-1">
+                                <div className="bg-slate-100 text-slate-900 px-4 py-2.5 rounded-2xl rounded-bl-sm">
+                                  <MediaMessageContent
+                                    message={m}
+                                    isOwn={false}
+                                    lang={lang}
+                                    onJumpToMessage={handleJumpToMessage}
+                                  />
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 px-1">
+                                  <span className="text-[11px] text-slate-400 tabular-nums">
+                                    {formatMessageTime(m.createdAt, lang)}
+                                  </span>
+                                  {replyButton}
+                                  {deleteControls}
+                                </div>
                               </div>
                             </div>
-                          </div>
+                          </SwipeableMessageRow>
                         );
                       })
                     )}
@@ -1707,6 +1928,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   threadId={selectedThread.id}
                   lang={lang}
                   enableFemaleVoiceOption={true}
+                  replyingTo={replyingTo}
+                  onCancelReply={() => setReplyingTo(null)}
                   placeholder={
                     lang === 'bn'
                       ? `${selectedThread.clientName}-কে মেসেজ, নারী কণ্ঠে ভয়েস বা ছবি/ভিডিও পাঠান...`

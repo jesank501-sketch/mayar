@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ExternalLink, Film, Pause, Play } from 'lucide-react';
-import { ChatMessage } from '../types';
+import { ExternalLink, Film, Pause, Play, Reply } from 'lucide-react';
+import { ChatMessage, Language } from '../types';
 import { extractYouTubeEmbedUrl, isSafeMediaUrl } from '../utils/media';
 
 interface MediaMessageContentProps {
   message: ChatMessage;
   isOwn: boolean;
+  lang?: Language;
+  onJumpToMessage?: (messageId: string) => void;
 }
 
 function formatAudioSeconds(sec: number): string {
@@ -14,6 +16,16 @@ function formatAudioSeconds(sec: number): string {
   const mins = Math.floor(total / 60);
   const rem = total % 60;
   return `${mins}:${rem.toString().padStart(2, '0')}`;
+}
+
+function formatQuotedPreview(message: ChatMessage, lang: Language): string {
+  const clean = (message.replyToText ?? '').trim();
+  if (clean) return clean;
+  const rType = message.replyToMessageType;
+  if (rType === 'image') return lang === 'bn' ? '📷 ছবি' : '📷 Photo';
+  if (rType === 'video') return lang === 'bn' ? '🎬 ভিডিও' : '🎬 Video';
+  if (rType === 'audio') return lang === 'bn' ? '🎤 ভয়েস মেসেজ' : '🎤 Voice note';
+  return lang === 'bn' ? 'মেসেজ' : 'Message';
 }
 
 const VoiceNotePlayer: React.FC<{ url: string; isOwn: boolean }> = ({ url, isOwn }) => {
@@ -132,15 +144,47 @@ const VoiceNotePlayer: React.FC<{ url: string; isOwn: boolean }> = ({ url, isOwn
 export const MediaMessageContent: React.FC<MediaMessageContentProps> = ({
   message,
   isOwn,
+  lang = 'bn',
+  onJumpToMessage,
 }) => {
   const [imgError, setImgError] = useState(false);
   const mType = message.messageType || 'text';
   const url = message.mediaUrl || '';
   const safeUrl = isSafeMediaUrl(url);
   const ytEmbed = mType === 'video' && safeUrl ? extractYouTubeEmbedUrl(url) : null;
+  const hasReplyQuote = Boolean(message.replyToMessageId);
 
   return (
     <div className="space-y-2 max-w-full">
+      {hasReplyQuote && message.replyToMessageId && (
+        <button
+          type="button"
+          data-no-swipe="true"
+          onClick={() => onJumpToMessage?.(message.replyToMessageId!)}
+          className={`w-full text-left rounded-xl px-2.5 py-1.5 border-l-2 transition-colors cursor-pointer ${
+            isOwn
+              ? 'bg-blue-700/60 hover:bg-blue-700/80 border-blue-200 text-blue-50'
+              : 'bg-white/90 hover:bg-white border-blue-500 text-slate-700'
+          }`}
+        >
+          <span
+            className={`flex items-center gap-1 text-[11px] font-semibold truncate ${
+              isOwn ? 'text-blue-100' : 'text-blue-700'
+            }`}
+          >
+            <Reply className="w-3 h-3 shrink-0" />
+            <span className="truncate">{message.replyToSenderName || 'Reply'}</span>
+          </span>
+          <span
+            className={`block text-xs truncate mt-0.5 ${
+              isOwn ? 'text-blue-100/90' : 'text-slate-600'
+            }`}
+          >
+            {formatQuotedPreview(message, lang)}
+          </span>
+        </button>
+      )}
+
       {mType === 'image' && safeUrl && !imgError && (
         <a
           href={url}

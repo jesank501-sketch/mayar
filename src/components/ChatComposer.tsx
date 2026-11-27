@@ -9,6 +9,7 @@ import {
   Link2,
   Mic,
   RefreshCw,
+  Reply,
   Send,
   ShieldAlert,
   Sparkles,
@@ -16,7 +17,7 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { FIELD_LIMITS, Language, MessageType } from '../types';
+import { FIELD_LIMITS, Language, MessageType, ReplyTarget } from '../types';
 import { formatLinkDomain, isSafeHttpsLink } from '../utils/linkRotation';
 import {
   convertVoiceToGoogleFemaleVoice,
@@ -44,12 +45,15 @@ interface ChatComposerProps {
   lang: Language;
   placeholder: string;
   enableFemaleVoiceOption?: boolean;
+  replyingTo?: ReplyTarget | null;
+  onCancelReply?: () => void;
   sponsoredGate?: SponsoredGateProps;
   onSendPayload: (payload: {
     messageType: MessageType;
     text: string;
     mediaUrl?: string;
     mediaMimeType?: string;
+    replyTo?: ReplyTarget | null;
   }) => Promise<void>;
 }
 
@@ -99,6 +103,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   lang,
   placeholder,
   enableFemaleVoiceOption = false,
+  replyingTo = null,
+  onCancelReply,
   sponsoredGate,
   onSendPayload,
 }) => {
@@ -153,6 +159,15 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
   const picVideoInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (replyingTo) {
+      window.setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 40);
+    }
+  }, [replyingTo]);
 
   useEffect(() => {
     return () => {
@@ -352,6 +367,21 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }));
   };
 
+  const dispatchWithReply = async (payload: {
+    messageType: MessageType;
+    text: string;
+    mediaUrl?: string;
+    mediaMimeType?: string;
+  }) => {
+    await onSendPayload({
+      ...payload,
+      replyTo: replyingTo,
+    });
+    if (replyingTo) {
+      onCancelReply?.();
+    }
+  };
+
   const dispatchAudioBlob = async (blob: Blob, rawMime: string, caption: string) => {
     if (enableFemaleVoiceOption && femaleVoiceEnabled) {
       setUploadingLabel(
@@ -367,7 +397,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           user,
           voiceName: 'Kore',
         });
-        await onSendPayload({
+        await dispatchWithReply({
           messageType: 'audio',
           text: caption,
           mediaUrl: converted.url,
@@ -386,7 +416,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       threadId,
       user,
     });
-    await onSendPayload({
+    await dispatchWithReply({
       messageType: 'audio',
       text: caption,
       mediaUrl: uploaded.url,
@@ -406,7 +436,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setSending(true);
     setErrorMsg(null);
     try {
-      await onSendPayload({
+      await dispatchWithReply({
         messageType: 'text',
         text: trimmed,
       });
@@ -480,7 +510,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           threadId,
           user,
         });
-        await onSendPayload({
+        await dispatchWithReply({
           messageType: 'image',
           text: draft.trim(),
           mediaUrl: uploaded.url,
@@ -494,7 +524,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           threadId,
           user,
         });
-        await onSendPayload({
+        await dispatchWithReply({
           messageType: uploaded.mediaType,
           text: draft.trim(),
           mediaUrl: uploaded.url,
@@ -834,7 +864,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     setSending(true);
     setErrorMsg(null);
     try {
-      await onSendPayload({
+      await dispatchWithReply({
         messageType: linkType,
         text: draft.trim(),
         mediaUrl: cleaned,
@@ -890,7 +920,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         user,
         voiceName: 'Kore',
       });
-      await onSendPayload({
+      await dispatchWithReply({
         messageType: 'audio',
         text: '',
         mediaUrl: generated.url,
@@ -937,6 +967,44 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         {uploadingLabel && (
           <div className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-xl px-3 py-2">
             {uploadingLabel}
+          </div>
+        )}
+
+        {replyingTo && (
+          <div className="flex items-center justify-between gap-2.5 pl-3 pr-2 py-2 bg-slate-50 border border-slate-200 border-l-4 border-l-blue-600 rounded-xl">
+            <div className="min-w-0 flex-1">
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-700 truncate">
+                <Reply className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">
+                  {lang === 'bn'
+                    ? `${replyingTo.senderName}-এর মেসেজে রিপ্লাই দিচ্ছেন`
+                    : `Replying to ${replyingTo.senderName}`}
+                </span>
+              </p>
+              <p className="text-xs text-slate-600 truncate mt-0.5">
+                {replyingTo.text.trim()
+                  ? replyingTo.text
+                  : replyingTo.messageType === 'image'
+                    ? lang === 'bn'
+                      ? '📷 ছবি'
+                      : '📷 Photo'
+                    : replyingTo.messageType === 'video'
+                      ? lang === 'bn'
+                        ? '🎬 ভিডিও'
+                        : '🎬 Video'
+                      : lang === 'bn'
+                        ? '🎤 ভয়েস মেসেজ'
+                        : '🎤 Voice note'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onCancelReply}
+              aria-label={lang === 'bn' ? 'রিপ্লাই বাতিল করুন' : 'Cancel reply'}
+              className="min-w-[34px] min-h-[34px] rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
 
@@ -1170,6 +1238,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           <form onSubmit={handleSendText} className="flex items-end gap-2">
             <div className="flex-1 min-w-0 relative">
               <textarea
+                ref={textareaRef}
                 rows={1}
                 value={draft}
                 onChange={(e) =>

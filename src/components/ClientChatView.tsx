@@ -15,11 +15,14 @@ import {
   Bell,
   BellOff,
   Camera,
+  Check,
+  CheckCheck,
   Globe,
   Image as ImageIcon,
   Lock,
   LogOut,
   Megaphone,
+  Reply,
   Shield,
   Video,
   X,
@@ -39,9 +42,11 @@ import {
   BroadcastMessage,
   ChatMessage,
   ChatThread,
+  FIELD_LIMITS,
   Language,
   MessageType,
   PublicPageSettings,
+  ReplyTarget,
   SponsoredLinksConfig,
   UserLinkState,
 } from '../types';
@@ -68,6 +73,7 @@ import { MediaMessageContent } from './MediaMessageContent';
 import { NotificationPermissionModal } from './NotificationPermissionModal';
 import { ProfilePhotoModal } from './ProfilePhotoModal';
 import { PWAInstallButton } from './PWAInstallButton';
+import { SwipeableMessageRow } from './SwipeableMessageRow';
 
 interface ClientChatViewProps {
   user: User;
@@ -148,8 +154,13 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   const [notifModalOpen, setNotifModalOpen] = useState(false);
   const [pushSynced, setPushSynced] = useState(false);
   const [incomingToast, setIncomingToast] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ReplyTarget | null>(null);
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
 
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const lastMarkedClientReadMsRef = useRef<number>(0);
+  const markingClientReadRef = useRef(false);
   const prevTotalCountRef = useRef(0);
   const initializedMessagesRef = useRef(false);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
@@ -308,12 +319,37 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
     return () => unsub();
   }, [user.uid]);
 
-  // 2. Mark incoming admin messages as read when thread updates
+  // 2. Mark incoming admin messages as read only when client chat is actively visible
   useEffect(() => {
-    if (thread && thread.unreadByClient > 0 && !isAdminPreview) {
-      void markThreadReadByClient(user.uid);
-    }
-  }, [thread, user.uid, isAdminPreview]);
+    const syncClientReadReceipt = () => {
+      if (isAdminPreview || !thread || activeTab !== 'all') return;
+      if (document.visibilityState !== 'visible') return;
+      const lastMsgMs = thread.lastMessageAt ? thread.lastMessageAt.toMillis() : 0;
+      const clientReadMs = thread.clientLastReadAt ? thread.clientLastReadAt.toMillis() : 0;
+      const needsReadUpdate =
+        thread.unreadByClient > 0 ||
+        (thread.lastMessageSender === 'admin' && lastMsgMs > 0 && clientReadMs < lastMsgMs);
+
+      if (!needsReadUpdate || markingClientReadRef.current) return;
+      if (lastMsgMs > 0 && lastMarkedClientReadMsRef.current >= lastMsgMs && thread.unreadByClient === 0) {
+        return;
+      }
+
+      markingClientReadRef.current = true;
+      lastMarkedClientReadMsRef.current = Math.max(lastMsgMs, Date.now());
+      void markThreadReadByClient(user.uid).finally(() => {
+        markingClientReadRef.current = false;
+      });
+    };
+
+    syncClientReadReceipt();
+    document.addEventListener('visibilitychange', syncClientReadReceipt);
+    window.addEventListener('focus', syncClientReadReceipt);
+    return () => {
+      document.removeEventListener('visibilitychange', syncClientReadReceipt);
+      window.removeEventListener('focus', syncClientReadReceipt);
+    };
+  }, [thread, user.uid, isAdminPreview, activeTab]);
 
   // 3. Real-time private 1-to-1 messages listener (paginated)
   useEffect(() => {
@@ -339,6 +375,15 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
               text: raw.text || '',
               mediaUrl: raw.mediaUrl || '',
               mediaMimeType: raw.mediaMimeType || '',
+              ...(raw.replyToMessageId
+                ? {
+                    replyToMessageId: raw.replyToMessageId,
+                    replyToSenderName: raw.replyToSenderName || 'User',
+                    replyToSenderRole: raw.replyToSenderRole || 'client',
+                    replyToText: raw.replyToText || '',
+                    replyToMessageType: raw.replyToMessageType || 'text',
+                  }
+                : {}),
               createdAt: raw.createdAt as Timestamp,
             };
           })
@@ -500,11 +545,47 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
     prevTotalCountRef.current = timeline.length;
   }, [timeline.length, activeTab]);
 
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleJumpToMessage = (messageId: string) => {
+    const targetEl = document.getElementById(`msg-${messageId}`);
+    if (!targetEl) return;
+    targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMsgId(messageId);
+    if (highlightTimerRef.current) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedMsgId((prev) => (prev === messageId ? null : prev));
+    }, 1600);
+  };
+
+  const handleSelectReply = (m: ChatMessage) => {
+    const senderLabel =
+      m.senderRole === 'admin' || m.senderRole === 'system'
+        ? settings.pageName
+        : m.senderName || clientDisplayName;
+    setReplyingTo({
+      messageId: m.id,
+      senderName: senderLabel,
+      senderRole: m.senderRole,
+      text: (m.text || '').slice(0, FIELD_LIMITS.REPLY_PREVIEW_MAX),
+      messageType: m.messageType || 'text',
+    });
+  };
+
   const handleSendPayload = async (payload: {
     messageType: MessageType;
     text: string;
     mediaUrl?: string;
     mediaMimeType?: string;
+    replyTo?: ReplyTarget | null;
   }) => {
     let lastAdminIndex = -1;
     let lastAdminId = 'initial';
@@ -543,9 +624,11 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
       messageType: payload.messageType,
       mediaUrl: payload.mediaUrl,
       mediaMimeType: payload.mediaMimeType,
+      replyTo: payload.replyTo ?? replyingTo,
       threadExists,
       senderPhotoOverride: clientPhotoURL,
     });
+    setReplyingTo(null);
     setActiveTab('all');
 
     if (!isAdminPreview && linksConfig.enabled) {
@@ -614,6 +697,27 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   const hasSavedGreetingInMessages = messages.some(
     (m) => m.senderRole === 'system' && m.text === settings.greetingMessage,
   );
+
+  const { lastClientMsgId, lastSeenClientMsgId } = useMemo(() => {
+    let lastId: string | null = null;
+    let lastSeenId: string | null = null;
+    const adminReadMs = thread?.adminLastReadAt ? thread.adminLastReadAt.toMillis() : null;
+    for (const m of messages) {
+      if (m.senderRole !== 'client') continue;
+      lastId = m.id;
+      const isSeen = Boolean(
+        m.createdAt &&
+          thread &&
+          (adminReadMs !== null
+            ? m.createdAt.toMillis() <= adminReadMs
+            : thread.unreadByAdmin === 0),
+      );
+      if (isSeen) {
+        lastSeenId = m.id;
+      }
+    }
+    return { lastClientMsgId: lastId, lastSeenClientMsgId: lastSeenId };
+  }, [messages, thread]);
 
   const adminStatusLabel = adminOnline
     ? lang === 'bn'
@@ -1231,38 +1335,108 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                   const isOwn = m.senderRole === 'client';
 
                   if (isOwn) {
+                    const isLastSeen = lastSeenClientMsgId === m.id;
+                    const isLastSentPending =
+                      lastClientMsgId === m.id && lastClientMsgId !== lastSeenClientMsgId;
                     return (
-                      <div key={`m-${m.id}`} className="flex justify-end items-end gap-2">
-                        <div className="max-w-[82%] sm:max-w-lg space-y-1 flex flex-col items-end">
-                          <div className="bg-blue-600 text-white px-4 py-2.5 rounded-2xl rounded-br-sm">
-                            <MediaMessageContent message={m} isOwn={true} />
+                      <SwipeableMessageRow
+                        key={`m-${m.id}`}
+                        messageId={m.id}
+                        isOwn={true}
+                        isHighlighted={highlightedMsgId === m.id}
+                        onSwipeReply={() => handleSelectReply(m)}
+                      >
+                        <div className="flex justify-end items-end gap-2">
+                          <div className="max-w-[82%] sm:max-w-lg space-y-1 flex flex-col items-end">
+                            <div className="bg-blue-600 text-white px-4 py-2.5 rounded-2xl rounded-br-sm">
+                              <MediaMessageContent
+                                message={m}
+                                isOwn={true}
+                                lang={lang}
+                                onJumpToMessage={handleJumpToMessage}
+                              />
+                            </div>
+                            <div className="flex items-center gap-2 px-1">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectReply(m)}
+                                aria-label={lang === 'bn' ? 'রিপ্লাই করুন' : 'Reply'}
+                                title={lang === 'bn' ? 'রিপ্লাই করুন' : 'Reply'}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                              >
+                                <Reply className="w-3 h-3" />
+                                <span>{lang === 'bn' ? 'রিপ্লাই' : 'Reply'}</span>
+                              </button>
+                              <span className="text-[11px] text-slate-400 tabular-nums">
+                                {formatMessageTime(m.createdAt, lang)}
+                              </span>
+                            </div>
+                            {isLastSeen && (
+                              <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-blue-600">
+                                <Avatar
+                                  src={settings.adminAvatarURL}
+                                  name={settings.pageName}
+                                  size="xs"
+                                />
+                                <CheckCheck className="w-3.5 h-3.5 shrink-0" />
+                                <span>{lang === 'bn' ? 'দেখেছেন' : 'Seen'}</span>
+                              </div>
+                            )}
+                            {isLastSentPending && (
+                              <div className="flex items-center gap-1 px-1 text-[11px] text-slate-400">
+                                <Check className="w-3 h-3 shrink-0" />
+                                <span>{lang === 'bn' ? 'পাঠানো হয়েছে' : 'Sent'}</span>
+                              </div>
+                            )}
                           </div>
-                          <span className="text-[11px] text-slate-400 px-1 tabular-nums">
-                            {formatMessageTime(m.createdAt, lang)}
-                          </span>
+                          <Avatar src={clientPhotoURL} name={clientDisplayName} size="sm" />
                         </div>
-                        <Avatar src={clientPhotoURL} name={clientDisplayName} size="sm" />
-                      </div>
+                      </SwipeableMessageRow>
                     );
                   }
 
                   return (
-                    <div key={`m-${m.id}`} className="flex items-end gap-2.5 max-w-[85%] sm:max-w-lg">
-                      <Avatar src={settings.adminAvatarURL} name={settings.pageName} size="sm" />
-                      <div className="space-y-1">
-                        <div className="bg-slate-100 text-slate-900 px-4 py-2.5 rounded-2xl rounded-bl-sm">
-                          <MediaMessageContent message={m} isOwn={false} />
+                    <SwipeableMessageRow
+                      key={`m-${m.id}`}
+                      messageId={m.id}
+                      isOwn={false}
+                      isHighlighted={highlightedMsgId === m.id}
+                      onSwipeReply={() => handleSelectReply(m)}
+                    >
+                      <div className="flex items-end gap-2.5 max-w-[85%] sm:max-w-lg">
+                        <Avatar src={settings.adminAvatarURL} name={settings.pageName} size="sm" />
+                        <div className="space-y-1">
+                          <div className="bg-slate-100 text-slate-900 px-4 py-2.5 rounded-2xl rounded-bl-sm">
+                            <MediaMessageContent
+                              message={m}
+                              isOwn={false}
+                              lang={lang}
+                              onJumpToMessage={handleJumpToMessage}
+                            />
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 px-1">
+                            <span className="text-[11px] text-slate-400 tabular-nums">
+                              {settings.pageName}
+                              {m.senderRole === 'system'
+                                ? ` · ${lang === 'bn' ? 'অটো বার্তা' : 'Auto Reply'}`
+                                : ''}
+                              {' · '}
+                              {formatMessageTime(m.createdAt, lang)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectReply(m)}
+                              aria-label={lang === 'bn' ? 'রিপ্লাই করুন' : 'Reply'}
+                              title={lang === 'bn' ? 'রিপ্লাই করুন' : 'Reply'}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                            >
+                              <Reply className="w-3 h-3" />
+                              <span>{lang === 'bn' ? 'রিপ্লাই' : 'Reply'}</span>
+                            </button>
+                          </div>
                         </div>
-                        <span className="block text-[11px] text-slate-400 px-1 tabular-nums">
-                          {settings.pageName}
-                          {m.senderRole === 'system'
-                            ? ` · ${lang === 'bn' ? 'অটো বার্তা' : 'Auto Reply'}`
-                            : ''}
-                          {' · '}
-                          {formatMessageTime(m.createdAt, lang)}
-                        </span>
                       </div>
-                    </div>
+                    </SwipeableMessageRow>
                   );
                 })
               )}
@@ -1276,6 +1450,8 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
             user={user}
             threadId={user.uid}
             lang={lang}
+            replyingTo={replyingTo}
+            onCancelReply={() => setReplyingTo(null)}
             placeholder={
               lang === 'bn'
                 ? 'মেসেজ লিখুন, ভয়েস রেকর্ড করুন অথবা ছবি/ভিডিও পাঠান...'

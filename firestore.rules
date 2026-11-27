@@ -108,7 +108,8 @@ service cloud.firestore {
           'clientId', 'clientName', 'clientEmail', 'clientPhotoURL',
           'clientPhone', 'clientAddress',
           'lastMessageText', 'lastMessageSender', 'lastMessageAt',
-          'unreadByAdmin', 'unreadByClient', 'status', 'createdAt', 'updatedAt'
+          'unreadByAdmin', 'unreadByClient', 'clientLastReadAt', 'adminLastReadAt',
+          'status', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.clientId)
         && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 100
@@ -121,6 +122,8 @@ service cloud.firestore {
         && data.lastMessageAt is timestamp
         && data.unreadByAdmin is int && data.unreadByAdmin >= 0 && data.unreadByAdmin <= 10000
         && data.unreadByClient is int && data.unreadByClient >= 0 && data.unreadByClient <= 10000
+        && (!('clientLastReadAt' in data) || data.clientLastReadAt is timestamp)
+        && (!('adminLastReadAt' in data) || data.adminLastReadAt is timestamp)
         && data.status in ['open', 'resolved']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -133,7 +136,9 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'threadId', 'senderId', 'senderRole', 'senderName',
-          'messageType', 'text', 'mediaUrl', 'mediaMimeType', 'createdAt'
+          'messageType', 'text', 'mediaUrl', 'mediaMimeType',
+          'replyToMessageId', 'replyToSenderName', 'replyToSenderRole',
+          'replyToText', 'replyToMessageType', 'createdAt'
         ])
         && isValidId(data.threadId)
         && isValidId(data.senderId)
@@ -143,6 +148,11 @@ service cloud.firestore {
         && data.text is string && data.text.size() <= 2000
         && isValidMediaUrl(data.mediaUrl)
         && data.mediaMimeType is string && data.mediaMimeType.size() <= 100
+        && (!('replyToMessageId' in data) || isValidId(data.replyToMessageId))
+        && (!('replyToSenderName' in data) || (data.replyToSenderName is string && data.replyToSenderName.size() >= 1 && data.replyToSenderName.size() <= 100))
+        && (!('replyToSenderRole' in data) || data.replyToSenderRole in ['client', 'admin', 'system'])
+        && (!('replyToText' in data) || (data.replyToText is string && data.replyToText.size() <= 300))
+        && (!('replyToMessageType' in data) || data.replyToMessageType in ['text', 'image', 'video', 'audio'])
         && (
           (data.messageType == 'text' && data.text.size() >= 1 && data.mediaUrl == '')
           || (data.messageType in ['image', 'video', 'audio'] && data.mediaUrl.size() >= 1)
@@ -320,11 +330,12 @@ service cloud.firestore {
             // Action: Admin replies to thread
             (incoming().diff(existing()).affectedKeys().hasOnly([
               'lastMessageText', 'lastMessageSender', 'lastMessageAt',
-              'unreadByClient', 'unreadByAdmin', 'status', 'updatedAt'
+              'unreadByClient', 'unreadByAdmin', 'adminLastReadAt', 'status', 'updatedAt'
             ]) && incoming().lastMessageSender == 'admin' && incoming().lastMessageAt == request.time)
             ||
             // Action: Admin marks read or toggles resolved status
-            incoming().diff(existing()).affectedKeys().hasOnly(['unreadByAdmin', 'status', 'updatedAt'])
+            (incoming().diff(existing()).affectedKeys().hasOnly(['unreadByAdmin', 'adminLastReadAt', 'status', 'updatedAt'])
+              && (!('adminLastReadAt' in incoming().diff(existing()).affectedKeys()) || incoming().adminLastReadAt == request.time))
             ||
             // Action: Admin refreshes thread preview after deleting a message
             incoming().diff(existing()).affectedKeys().hasOnly([
@@ -338,16 +349,18 @@ service cloud.firestore {
             (incoming().diff(existing()).affectedKeys().hasOnly([
               'clientName', 'clientPhotoURL', 'clientPhone', 'clientAddress',
               'lastMessageText', 'lastMessageSender',
-              'lastMessageAt', 'unreadByAdmin', 'status', 'updatedAt'
+              'lastMessageAt', 'unreadByAdmin', 'clientLastReadAt', 'status', 'updatedAt'
             ])
               && incoming().lastMessageSender in ['client', 'system']
               && incoming().lastMessageAt == request.time
               && incoming().status == 'open'
-              && incoming().unreadByAdmin >= existing().unreadByAdmin)
+              && incoming().unreadByAdmin >= existing().unreadByAdmin
+              && (!('clientLastReadAt' in incoming().diff(existing()).affectedKeys()) || incoming().clientLastReadAt == request.time))
             ||
             // Action: Client marks admin messages as read
-            (incoming().diff(existing()).affectedKeys().hasOnly(['unreadByClient', 'updatedAt'])
-              && incoming().unreadByClient == 0)
+            (incoming().diff(existing()).affectedKeys().hasOnly(['unreadByClient', 'clientLastReadAt', 'updatedAt'])
+              && incoming().unreadByClient == 0
+              && (!('clientLastReadAt' in incoming().diff(existing()).affectedKeys()) || incoming().clientLastReadAt == request.time))
             ||
             // Action: Client updates profile photo, display name, phone, or address
             incoming().diff(existing()).affectedKeys().hasOnly(['clientName', 'clientPhotoURL', 'clientPhone', 'clientAddress', 'updatedAt'])

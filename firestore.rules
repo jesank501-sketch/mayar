@@ -399,7 +399,15 @@ service cloud.firestore {
             )
           );
         allow update: if false;
-        allow delete: if isAdmin() && isValidId(threadId) && isValidId(messageId);
+        allow delete: if isValidId(threadId) && isValidId(messageId) && (
+          isAdmin()
+          || (
+            isVerifiedClient()
+            && isOwner(threadId)
+            && resource.data.createdAt is timestamp
+            && resource.data.createdAt + duration.value(59, 'm') <= request.time
+          )
+        );
       }
     }
 

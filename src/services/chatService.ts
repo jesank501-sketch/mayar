@@ -6,8 +6,12 @@ import {
   getDoc,
   getDocs,
   increment,
+  limit,
+  orderBy,
+  query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
@@ -644,6 +648,58 @@ export async function deleteChatThread(threadId: string): Promise<void> {
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `threads/${threadId}`);
+  }
+}
+
+export const MESSAGE_RETENTION_MINUTES = 60;
+export const MESSAGE_RETENTION_MS = MESSAGE_RETENTION_MINUTES * 60 * 1000;
+export const KEEP_RECENT_MESSAGES = 4;
+
+/**
+ * Deletes messages in a thread older than 60 minutes while always keeping
+ * the latest 4 messages intact. Non-blocking so background pruning never
+ * disrupts live messaging.
+ */
+export async function cleanupExpiredThreadMessages(threadId: string): Promise<number> {
+  if (!threadId) return 0;
+  try {
+    const q = query(
+      collection(db, 'threads', threadId, 'messages'),
+      orderBy('createdAt', 'desc'),
+      limit(300),
+    );
+    const snap = await getDocs(q);
+    if (snap.docs.length <= KEEP_RECENT_MESSAGES) {
+      return 0;
+    }
+
+    const cutoffMs = Date.now() - MESSAGE_RETENTION_MS;
+    const olderDocs = snap.docs.slice(KEEP_RECENT_MESSAGES);
+    const expiredRefs = olderDocs
+      .filter((d) => {
+        const createdAt = d.data().createdAt as Timestamp | undefined;
+        return Boolean(
+          createdAt &&
+            typeof createdAt.toMillis === 'function' &&
+            createdAt.toMillis() <= cutoffMs,
+        );
+      })
+      .map((d) => d.ref);
+
+    if (expiredRefs.length === 0) {
+      return 0;
+    }
+
+    const chunkSize = 400;
+    for (let i = 0; i < expiredRefs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      const chunk = expiredRefs.slice(i, i + chunkSize);
+      chunk.forEach((ref) => batch.delete(ref));
+      await batch.commit();
+    }
+    return expiredRefs.length;
+  } catch {
+    return 0;
   }
 }
 

@@ -17,6 +17,7 @@ import {
   Camera,
   Check,
   CheckCheck,
+  Clock,
   Globe,
   Image as ImageIcon,
   Lock,
@@ -29,8 +30,11 @@ import {
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
+  cleanupExpiredThreadMessages,
   completeClientLinkStep,
+  KEEP_RECENT_MESSAGES,
   markThreadReadByClient,
+  MESSAGE_RETENTION_MS,
   recordClientMessageSentForLinkCycle,
   sendMessageAtomic,
   sendOfflineAutoReplyIfPossible,
@@ -161,6 +165,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
   const highlightTimerRef = useRef<number | null>(null);
   const lastMarkedClientReadMsRef = useRef<number>(0);
   const markingClientReadRef = useRef(false);
+  const lastCleanupRunRef = useRef<number>(0);
   const prevTotalCountRef = useRef(0);
   const initializedMessagesRef = useRef(false);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
@@ -552,6 +557,48 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
       }
     };
   }, []);
+
+  // Auto-erase messages older than 60 minutes while keeping the latest 4 messages
+  useEffect(() => {
+    if (isAdminPreview || !threadExists) return;
+    if (!hasMoreMessages && messages.length <= KEEP_RECENT_MESSAGES) return;
+
+    const runCleanup = () => {
+      const now = Date.now();
+      if (now - lastCleanupRunRef.current < 10_000) return;
+      lastCleanupRunRef.current = now;
+      void cleanupExpiredThreadMessages(user.uid);
+    };
+
+    const olderMessages =
+      messages.length > KEEP_RECENT_MESSAGES
+        ? messages.slice(0, messages.length - KEEP_RECENT_MESSAGES)
+        : [];
+    const cutoffMs = Date.now() - MESSAGE_RETENTION_MS;
+    const hasImmediateExpired =
+      hasMoreMessages ||
+      olderMessages.some((m) => m.createdAt && m.createdAt.toMillis() <= cutoffMs);
+
+    if (hasImmediateExpired) {
+      runCleanup();
+    }
+
+    let nextExpiryMs: number | null = null;
+    for (const m of olderMessages) {
+      if (!m.createdAt) continue;
+      const exp = m.createdAt.toMillis() + MESSAGE_RETENTION_MS;
+      if (exp > Date.now() && (nextExpiryMs === null || exp < nextExpiryMs)) {
+        nextExpiryMs = exp;
+      }
+    }
+
+    const delayMs =
+      nextExpiryMs !== null
+        ? Math.max(1500, Math.min(nextExpiryMs - Date.now() + 1500, 3_600_000))
+        : 60_000;
+    const timer = window.setTimeout(runCleanup, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [user.uid, isAdminPreview, threadExists, messages, hasMoreMessages]);
 
   const handleJumpToMessage = (messageId: string) => {
     const targetEl = document.getElementById(`msg-${messageId}`);
@@ -1269,6 +1316,19 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
             />
           ) : (
             <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
+              {activeTab === 'all' && (
+                <div className="flex justify-center">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-[11px] text-slate-500">
+                    <Clock className="w-3 h-3 shrink-0" />
+                    <span>
+                      {lang === 'bn'
+                        ? '৬০ মিনিট পর পুরনো মেসেজ স্বয়ংক্রিয়ভাবে মুছে যায় (সর্বশেষ ৪টি থাকে)'
+                        : 'Messages older than 60m auto-delete (latest 4 kept)'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {hasMoreMessages && activeTab === 'all' && (
                 <div className="flex justify-center">
                   <button

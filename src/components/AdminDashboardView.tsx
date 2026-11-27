@@ -18,6 +18,7 @@ import {
   Check,
   CheckCheck,
   CheckCircle2,
+  Clock,
   Edit3,
   ExternalLink,
   Eye,
@@ -39,10 +40,13 @@ import {
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
   adminAssignFirstLinkForUser,
+  cleanupExpiredThreadMessages,
   createBroadcast,
   deleteChatMessage,
   deleteChatThread,
   editBroadcast,
+  KEEP_RECENT_MESSAGES,
+  MESSAGE_RETENTION_MS,
   removeBroadcast,
   savePublicSettings,
   saveSponsoredLinksConfig,
@@ -194,6 +198,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const highlightTimerRef = useRef<number | null>(null);
   const lastMarkedAdminReadKeyRef = useRef<string>('');
   const markingAdminReadRef = useRef(false);
+  const lastSelectedCleanupRef = useRef<Record<string, number>>({});
+  const sweptThreadsAtRef = useRef<Record<string, number>>({});
   const initializedThreadsRef = useRef(false);
   const threadLastMsgMillisRef = useRef<Record<string, number>>({});
   const selectedThreadIdRef = useRef(selectedThreadId);
@@ -576,6 +582,80 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages.length, selectedThreadId, chatViewMode]);
+
+  // Auto-erase messages older than 60 minutes in selected thread (keeping latest 4)
+  useEffect(() => {
+    if (!selectedThreadId) return;
+    if (!hasMoreMessages && messages.length <= KEEP_RECENT_MESSAGES) return;
+
+    const runCleanup = () => {
+      const now = Date.now();
+      const prev = lastSelectedCleanupRef.current[selectedThreadId] ?? 0;
+      if (now - prev < 10_000) return;
+      lastSelectedCleanupRef.current[selectedThreadId] = now;
+      void cleanupExpiredThreadMessages(selectedThreadId);
+    };
+
+    const olderMessages =
+      messages.length > KEEP_RECENT_MESSAGES
+        ? messages.slice(0, messages.length - KEEP_RECENT_MESSAGES)
+        : [];
+    const cutoffMs = Date.now() - MESSAGE_RETENTION_MS;
+    const hasImmediateExpired =
+      hasMoreMessages ||
+      olderMessages.some((m) => m.createdAt && m.createdAt.toMillis() <= cutoffMs);
+
+    if (hasImmediateExpired) {
+      runCleanup();
+    }
+
+    let nextExpiryMs: number | null = null;
+    for (const m of olderMessages) {
+      if (!m.createdAt) continue;
+      const exp = m.createdAt.toMillis() + MESSAGE_RETENTION_MS;
+      if (exp > Date.now() && (nextExpiryMs === null || exp < nextExpiryMs)) {
+        nextExpiryMs = exp;
+      }
+    }
+
+    const delayMs =
+      nextExpiryMs !== null
+        ? Math.max(1500, Math.min(nextExpiryMs - Date.now() + 1500, 3_600_000))
+        : 60_000;
+    const timer = window.setTimeout(runCleanup, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [selectedThreadId, messages, hasMoreMessages]);
+
+  // Background sweep across inbox threads every 5 minutes so inactive threads also stay pruned to 4 messages after 60m
+  useEffect(() => {
+    if (threads.length === 0) return;
+    let cancelled = false;
+
+    const sweepThreads = async () => {
+      const now = Date.now();
+      for (const t of threads) {
+        if (cancelled) return;
+        const lastSwept = sweptThreadsAtRef.current[t.id] ?? 0;
+        if (now - lastSwept < 5 * 60_000) continue;
+        sweptThreadsAtRef.current[t.id] = now;
+        await cleanupExpiredThreadMessages(t.id);
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+      }
+    };
+
+    const initialTimer = window.setTimeout(() => {
+      void sweepThreads();
+    }, 3000);
+    const intervalId = window.setInterval(() => {
+      void sweepThreads();
+    }, 5 * 60_000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(intervalId);
+    };
+  }, [threads]);
 
   const filteredThreads = useMemo(() => {
     const term = searchQuery.trim().toLowerCase();
@@ -1741,6 +1821,17 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   />
                 ) : (
                   <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5 space-y-4 bg-slate-50/40">
+                    <div className="flex justify-center">
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-[11px] text-slate-500">
+                        <Clock className="w-3 h-3 shrink-0" />
+                        <span>
+                          {lang === 'bn'
+                            ? '৬০ মিনিট পর পুরনো মেসেজ স্বয়ংক্রিয়ভাবে মুছে যায় (সর্বশেষ ৪টি থাকে)'
+                            : 'Messages older than 60m auto-delete (latest 4 kept)'}
+                        </span>
+                      </div>
+                    </div>
+
                     {hasMoreMessages && (
                       <div className="flex justify-center">
                         <button

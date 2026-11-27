@@ -1,7 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ExternalLink, Film, Pause, Play, Reply } from 'lucide-react';
+import { Download, ExternalLink, Film, Pause, Play, Reply } from 'lucide-react';
 import { ChatMessage, Language } from '../types';
-import { extractYouTubeEmbedUrl, isSafeMediaUrl } from '../utils/media';
+import {
+  extractYouTubeEmbedUrl,
+  getMediaDownloadInfo,
+  isSafeMediaUrl,
+} from '../utils/media';
 
 interface MediaMessageContentProps {
   message: ChatMessage;
@@ -223,20 +227,44 @@ export const MediaMessageContent: React.FC<MediaMessageContentProps> = ({
               className="w-full max-h-64 rounded-xl bg-slate-950"
             />
           )}
-          {url.startsWith('https://') && !ytEmbed && (
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] underline ${
-                isOwn ? 'text-blue-100' : 'text-slate-600'
-              }`}
-            >
-              <Film className="w-3 h-3 shrink-0" />
-              <span className="truncate">{url}</span>
-              <ExternalLink className="w-3 h-3 shrink-0" />
-            </a>
-          )}
+          {!ytEmbed && (() => {
+            const dl = getMediaDownloadInfo(url, 'video');
+            return (
+              <div
+                className={`flex items-center justify-between gap-2 px-3 py-1.5 text-[11px] ${
+                  isOwn
+                    ? 'bg-blue-700/80 text-blue-50'
+                    : 'bg-slate-900 text-slate-200 border-t border-slate-800'
+                }`}
+              >
+                <a
+                  href={dl.href}
+                  download={dl.filename}
+                  target={dl.isExternal ? '_blank' : undefined}
+                  rel={dl.isExternal ? 'noopener noreferrer' : undefined}
+                  data-no-swipe="true"
+                  className="inline-flex items-center gap-1.5 font-semibold hover:underline cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>{lang === 'bn' ? 'ভিডিও ডাউনলোড করুন' : 'Download Video'}</span>
+                </a>
+
+                {dl.isExternal && (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-no-swipe="true"
+                    aria-label="Open source video URL"
+                    className="inline-flex items-center gap-1 opacity-85 hover:opacity-100 truncate max-w-[120px]"
+                  >
+                    <Film className="w-3 h-3 shrink-0" />
+                    <ExternalLink className="w-3 h-3 shrink-0" />
+                  </a>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 

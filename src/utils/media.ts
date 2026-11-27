@@ -78,6 +78,10 @@ export function inferMediaMimeType(
     case 'mts':
     case 'avi':
     case 'flv':
+    case 'wmv':
+    case 'f4v':
+    case 'divx':
+    case 'vob':
       return 'video/mp4';
     case 'webm':
     case 'ogv':
@@ -107,6 +111,176 @@ export function inferMediaMimeType(
       if (fallbackKind === 'audio') return 'audio/mpeg';
       return '';
   }
+}
+
+export async function detectMediaKindFromMagicBytes(
+  file: File,
+): Promise<'video' | 'image' | 'audio' | null> {
+  try {
+    const slice = file.slice(0, Math.min(file.size, 256));
+    const bytes = new Uint8Array(await slice.arrayBuffer());
+    if (bytes.length < 4) return null;
+
+    // MP4 / MOV / M4V / 3GP / ISO BMFF container: "ftyp" at offset 4
+    if (
+      bytes.length >= 12 &&
+      bytes[4] === 0x66 &&
+      bytes[5] === 0x74 &&
+      bytes[6] === 0x79 &&
+      bytes[7] === 0x70
+    ) {
+      const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+      if (brand === 'M4A ' || brand === 'M4B ') return 'audio';
+      return 'video';
+    }
+
+    // EBML (WebM / MKV)
+    if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+      return 'video';
+    }
+
+    // FLV
+    if (bytes[0] === 0x46 && bytes[1] === 0x4c && bytes[2] === 0x56) {
+      return 'video';
+    }
+
+    // ASF / WMV
+    if (bytes[0] === 0x30 && bytes[1] === 0x26 && bytes[2] === 0xb2 && bytes[3] === 0x75) {
+      return 'video';
+    }
+
+    // MPEG Program Stream / Video sequence
+    if (
+      bytes[0] === 0x00 &&
+      bytes[1] === 0x00 &&
+      bytes[2] === 0x01 &&
+      (bytes[3] === 0xba || bytes[3] === 0xb3)
+    ) {
+      return 'video';
+    }
+
+    // MPEG-TS sync byte 0x47 at 0 and 188
+    if (bytes.length >= 189 && bytes[0] === 0x47 && bytes[188] === 0x47) {
+      return 'video';
+    }
+
+    // RIFF container (AVI / WebP / WAV)
+    if (
+      bytes.length >= 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46
+    ) {
+      const form = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+      if (form === 'AVI ') return 'video';
+      if (form === 'WEBP') return 'image';
+      if (form === 'WAVE') return 'audio';
+    }
+
+    // JPEG / PNG / GIF
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image';
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+      return 'image';
+    }
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+      return 'image';
+    }
+
+    // MP3 (ID3 or MPEG frame sync), OGG, FLAC, AMR
+    if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) return 'audio';
+    if (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) return 'audio';
+    if (bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
+      return 'audio';
+    }
+    if (bytes[0] === 0x66 && bytes[1] === 0x4c && bytes[2] === 0x61 && bytes[3] === 0x43) {
+      return 'audio';
+    }
+    if (bytes[0] === 0x23 && bytes[1] === 0x21 && bytes[2] === 0x41 && bytes[3] === 0x4d) {
+      return 'audio';
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function probeVideoPlayableMetadata(file: File): Promise<boolean> {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    let settled = false;
+
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timerId);
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+      resolve(ok);
+    };
+
+    const timerId = window.setTimeout(() => finish(false), 2500);
+    video.preload = 'metadata';
+    video.muted = true;
+    video.onloadedmetadata = () => {
+      finish(video.videoWidth > 0 || (Number.isFinite(video.duration) && video.duration > 0));
+    };
+    video.onerror = () => finish(false);
+    video.src = objectUrl;
+  });
+}
+
+export function getMediaDownloadInfo(
+  url: string,
+  fallbackType: 'video' | 'image' = 'video',
+): { href: string; filename: string; isExternal: boolean } {
+  if (url.startsWith('/api/media/')) {
+    const rawName = url.split('/').pop()?.split('?')[0] || (fallbackType === 'video' ? 'video.mp4' : 'photo.jpg');
+    return {
+      href: `${url}?download=1`,
+      filename: `BartaConnect-${rawName}`,
+      isExternal: false,
+    };
+  }
+  if (url.startsWith('data:video/')) {
+    const ext = url.includes('video/webm')
+      ? 'webm'
+      : url.includes('video/quicktime')
+        ? 'mov'
+        : url.includes('video/3gpp')
+          ? '3gp'
+          : 'mp4';
+    return {
+      href: url,
+      filename: `BartaConnect-video.${ext}`,
+      isExternal: false,
+    };
+  }
+  if (url.startsWith('data:image/')) {
+    const ext = url.includes('image/png')
+      ? 'png'
+      : url.includes('image/webp')
+        ? 'webp'
+        : url.includes('image/gif')
+          ? 'gif'
+          : 'jpg';
+    return {
+      href: url,
+      filename: `BartaConnect-photo.${ext}`,
+      isExternal: false,
+    };
+  }
+  const cleanName =
+    url.split('/').pop()?.split('?')[0] ||
+    (fallbackType === 'video' ? 'BartaConnect-video.mp4' : 'BartaConnect-photo.jpg');
+  return {
+    href: url,
+    filename: cleanName,
+    isExternal: url.startsWith('https://'),
+  };
 }
 
 export async function compressAvatarFile(file: File): Promise<string> {

@@ -139,6 +139,8 @@ const MIME_MAP: Record<
   'video/avi': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'video/x-msvideo': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'video/x-flv': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/x-ms-wmv': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/divx': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'audio/webm': { ext: 'webm', kind: 'audio', contentType: 'audio/webm' },
   'audio/mp4': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
   'audio/x-m4a': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
@@ -748,7 +750,7 @@ async function startServer(): Promise<void> {
         if (
           !Number.isInteger(totalChunks) ||
           totalChunks < 1 ||
-          totalChunks > 24 ||
+          totalChunks > 60 ||
           !Number.isInteger(chunkIndex) ||
           chunkIndex < 0 ||
           chunkIndex >= totalChunks
@@ -815,10 +817,10 @@ async function startServer(): Promise<void> {
           chunkPaths.push(p);
         }
 
-        const maxTotalBytes = 80 * 1024 * 1024;
+        const maxTotalBytes = 200 * 1024 * 1024;
         if (totalSize > maxTotalBytes) {
           await fs.promises.rm(chunkDir, { recursive: true, force: true });
-          res.status(413).json({ error: 'File exceeds 80 MB maximum allowed size' });
+          res.status(413).json({ error: 'File exceeds 200 MB maximum allowed size' });
           return;
         }
 
@@ -1273,6 +1275,9 @@ async function startServer(): Promise<void> {
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      if (req.query.download === '1') {
+        res.setHeader('Content-Disposition', `attachment; filename="BartaConnect-${fileName}"`);
+      }
 
       if (rangeHeader) {
         const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);

@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
-import { Film, Image as ImageIcon, Trash2, X } from 'lucide-react';
+import { Download, Film, Image as ImageIcon, Trash2, X } from 'lucide-react';
 import { ChatMessage, Language } from '../types';
 import { formatRelativeTime } from '../utils/formatters';
-import { extractYouTubeEmbedUrl, isSafeMediaUrl } from '../utils/media';
+import {
+  extractYouTubeEmbedUrl,
+  getMediaDownloadInfo,
+  isSafeMediaUrl,
+} from '../utils/media';
 
 interface MediaGalleryPanelProps {
   messages: ChatMessage[];
@@ -132,6 +136,26 @@ export const MediaGalleryPanel: React.FC<MediaGalleryPanelProps> = ({
                               : 'Video')}
                       </span>
                       <div className="flex items-center gap-2 shrink-0">
+                        {!ytEmbed && (() => {
+                          const dl = getMediaDownloadInfo(
+                            m.mediaUrl,
+                            m.messageType === 'image' ? 'image' : 'video',
+                          );
+                          return (
+                            <a
+                              href={dl.href}
+                              download={dl.filename}
+                              target={dl.isExternal ? '_blank' : undefined}
+                              rel={dl.isExternal ? 'noopener noreferrer' : undefined}
+                              aria-label={lang === 'bn' ? 'ডাউনলোড করুন' : 'Download'}
+                              title={lang === 'bn' ? 'ডাউনলোড করুন' : 'Download'}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer"
+                            >
+                              <Download className="w-3 h-3 shrink-0" />
+                              <span>{lang === 'bn' ? 'ডাউনলোড' : 'Save'}</span>
+                            </a>
+                          );
+                        })()}
                         <span className="text-[11px] text-slate-400 tabular-nums">
                           {formatRelativeTime(m.createdAt, lang)}
                         </span>

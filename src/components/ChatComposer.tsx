@@ -5,6 +5,7 @@ import {
   ExternalLink,
   FileAudio,
   Film,
+  FolderOpen,
   Image as ImageIcon,
   Link2,
   Mic,
@@ -21,10 +22,12 @@ import { FIELD_LIMITS, Language, MessageType, ReplyTarget } from '../types';
 import { formatLinkDomain, isSafeHttpsLink } from '../utils/linkRotation';
 import {
   convertVoiceToGoogleFemaleVoice,
+  detectMediaKindFromMagicBytes,
   encodePcmFloat32ToWavBlob,
   generateGoogleFemaleVoiceFromText,
   inferMediaMimeType,
   isSafeMediaUrl,
+  probeVideoPlayableMetadata,
   uploadAudioWithFallback,
   uploadChatPhotoWithFallback,
   uploadChatVideoWithFallback,
@@ -159,6 +162,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
 
   const picVideoInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const fileManagerInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -457,40 +461,21 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
-  const handlePicOrVideoSelected = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-    forcedKind?: 'image' | 'video',
+  const sendSelectedMediaFile = async (
+    file: File,
+    kind: 'image' | 'video',
+    resolvedMime: string,
   ) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    if (isGateBlocking) {
-      setErrorMsg(gateBlockedMessage);
-      return;
-    }
-
-    const mime = inferMediaMimeType(file, forcedKind);
-    const isVideo = forcedKind === 'video' || mime.startsWith('video/');
-    const isImage = !isVideo && (forcedKind === 'image' || mime.startsWith('image/') || !mime);
-
-    if (!isImage && !isVideo) {
-      setErrorMsg(
-        lang === 'bn'
-          ? 'দয়া করে সঠিক ছবি (JPG/PNG/WebP) বা ভিডিও (MP4/WebM/MOV) ফাইল নির্বাচন করুন।'
-          : 'Please choose a valid image (JPG/PNG/WebP) or video (MP4/WebM/MOV) file.',
-      );
-      return;
-    }
-
-    const maxBytes = isVideo ? 80 * 1024 * 1024 : 15 * 1024 * 1024;
+    const isVideo = kind === 'video';
+    const maxBytes = isVideo ? 200 * 1024 * 1024 : 15 * 1024 * 1024;
     if (file.size > maxBytes) {
       setErrorMsg(
         lang === 'bn'
           ? isVideo
-            ? 'ভিডিও ফাইল সর্বোচ্চ ৮০ মেগাবাইট হতে পারবে।'
+            ? 'ভিডিও ফাইল সর্বোচ্চ ২০০ মেগাবাইট হতে পারবে।'
             : 'ছবি ফাইল সর্বোচ্চ ১৫ মেগাবাইট হতে পারবে।'
           : isVideo
-            ? 'Video file must be under 80 MB.'
+            ? 'Video file must be under 200 MB.'
             : 'Image file must be under 15 MB.',
       );
       return;
@@ -508,7 +493,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     );
 
     try {
-      if (isImage) {
+      if (!isVideo) {
         const uploaded = await uploadChatPhotoWithFallback({
           file,
           threadId,
@@ -524,7 +509,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       } else {
         const uploaded = await uploadChatVideoWithFallback({
           file,
-          mimeType: mime || 'video/mp4',
+          mimeType: resolvedMime || 'video/mp4',
           threadId,
           user,
           onProgress: (pct) => {
@@ -562,6 +547,107 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     } finally {
       setUploadingLabel(null);
     }
+  };
+
+  const handlePicOrVideoSelected = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    forcedKind?: 'image' | 'video',
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (isGateBlocking) {
+      setErrorMsg(gateBlockedMessage);
+      return;
+    }
+
+    const mime = inferMediaMimeType(file, forcedKind);
+    const isVideo = forcedKind === 'video' || mime.startsWith('video/');
+    const isImage = !isVideo && (forcedKind === 'image' || mime.startsWith('image/') || !mime);
+
+    if (!isImage && !isVideo) {
+      setErrorMsg(
+        lang === 'bn'
+          ? 'দয়া করে সঠিক ছবি (JPG/PNG/WebP) বা ভিডিও (MP4/WebM/MOV) ফাইল নির্বাচন করুন।'
+          : 'Please choose a valid image (JPG/PNG/WebP) or video (MP4/WebM/MOV) file.',
+      );
+      return;
+    }
+
+    await sendSelectedMediaFile(file, isVideo ? 'video' : 'image', mime);
+  };
+
+  const handleFileManagerSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (isGateBlocking) {
+      setErrorMsg(gateBlockedMessage);
+      return;
+    }
+
+    const inferredMime = inferMediaMimeType(file);
+    let detectedKind: 'video' | 'image' | 'audio' | null = inferredMime.startsWith('video/')
+      ? 'video'
+      : inferredMime.startsWith('image/')
+        ? 'image'
+        : inferredMime.startsWith('audio/')
+          ? 'audio'
+          : null;
+
+    if (!detectedKind) {
+      detectedKind = await detectMediaKindFromMagicBytes(file);
+    }
+    if (!detectedKind && (await probeVideoPlayableMetadata(file))) {
+      detectedKind = 'video';
+    }
+
+    if (detectedKind === 'video') {
+      await sendSelectedMediaFile(
+        file,
+        'video',
+        inferredMime.startsWith('video/') ? inferredMime : 'video/mp4',
+      );
+      return;
+    }
+
+    if (detectedKind === 'image') {
+      await sendSelectedMediaFile(file, 'image', inferredMime || 'image/jpeg');
+      return;
+    }
+
+    if (detectedKind === 'audio') {
+      if (file.size > 15 * 1024 * 1024) {
+        setErrorMsg(
+          lang === 'bn'
+            ? 'অডিও ফাইল সর্বোচ্চ ১৫ মেগাবাইট হতে পারবে।'
+            : 'Audio file must be under 15 MB.',
+        );
+        return;
+      }
+      setErrorMsg(null);
+      try {
+        await dispatchAudioBlob(file, inferredMime || 'audio/mpeg', draft.trim());
+        setDraft('');
+      } catch (err) {
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : lang === 'bn'
+              ? 'অডিও পাঠানো ব্যর্থ হয়েছে।'
+              : 'Audio upload failed.',
+        );
+      } finally {
+        setUploadingLabel(null);
+      }
+      return;
+    }
+
+    setErrorMsg(
+      lang === 'bn'
+        ? 'নির্বাচিত ফাইলটি ভিডিও, ছবি বা অডিও ফরম্যাটের নয়। অনুগ্রহ করে ডাউনলোড করা ভিডিও, ছবি বা অডিও ফাইল দিন।'
+        : 'Selected file is not a recognized video, photo, or audio file.',
+    );
   };
 
   const handleAudioFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1074,12 +1160,36 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 type="button"
                 onClick={() => videoInputRef.current?.click()}
                 disabled={Boolean(uploadingLabel)}
-                title={lang === 'bn' ? 'ভিডিও পাঠান (৮০ মেগাবাইট পর্যন্ত)' : 'Send Video (up to 80 MB)'}
+                title={
+                  lang === 'bn'
+                    ? 'গ্যালারি থেকে ভিডিও পাঠান (২০০ মেগাবাইট পর্যন্ত)'
+                    : 'Send Video from Gallery (up to 200 MB)'
+                }
                 aria-label={lang === 'bn' ? 'ভিডিও পাঠান' : 'Send Video'}
                 className="min-h-[40px] px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 active:scale-95 transition-colors cursor-pointer shrink-0"
               >
                 <Film className="w-4 h-4 text-blue-600 shrink-0" />
                 <span>{lang === 'bn' ? 'ভিডিও' : 'Video'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => fileManagerInputRef.current?.click()}
+                disabled={Boolean(uploadingLabel)}
+                title={
+                  lang === 'bn'
+                    ? 'ফোনের ফাইল ম্যানেজার বা Downloads থেকে ডাউনলোড করা রিয়েল ভিডিও পাঠান'
+                    : 'Send downloaded video from Phone File Manager / Downloads'
+                }
+                aria-label={
+                  lang === 'bn'
+                    ? 'ফাইল থেকে ডাউনলোড করা ভিডিও পাঠান'
+                    : 'Send Video from File Manager'
+                }
+                className="min-h-[40px] px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 active:scale-95 transition-colors cursor-pointer shrink-0"
+              >
+                <FolderOpen className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>{lang === 'bn' ? 'ফাইল' : 'File'}</span>
               </button>
 
               <button
@@ -1220,9 +1330,15 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         <input
           ref={videoInputRef}
           type="file"
-          accept="video/*,.mp4,.mov,.webm,.m4v,.3gp,.mkv"
+          accept="video/*,.mp4,.mov,.webm,.m4v,.3gp,.mkv,.avi,.flv,.wmv,.ts"
           className="hidden"
           onChange={(e) => void handlePicOrVideoSelected(e, 'video')}
+        />
+        <input
+          ref={fileManagerInputRef}
+          type="file"
+          className="hidden"
+          onChange={(e) => void handleFileManagerSelected(e)}
         />
         <input
           ref={audioInputRef}

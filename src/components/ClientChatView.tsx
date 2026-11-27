@@ -48,6 +48,11 @@ import {
 import { formatMessageTime, formatRelativeTime } from '../utils/formatters';
 import { resolveActiveLinkForUser } from '../utils/linkRotation';
 import {
+  extractPhoneFromSyntheticEmail,
+  formatClientContactLabel,
+  isSyntheticPhoneEmail,
+} from '../utils/phoneAuth';
+import {
   enableAndSubscribePushNotifications,
   isNotificationSupported,
   isStandalonePwa,
@@ -592,7 +597,19 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
     onClientPhotoUpdated(newPhotoURL);
   };
 
-  const clientDisplayName = user.displayName || user.email?.split('@')[0] || 'Client';
+  const clientDisplayName =
+    thread?.clientName ||
+    user.displayName ||
+    (isSyntheticPhoneEmail(user.email)
+      ? extractPhoneFromSyntheticEmail(user.email)
+      : user.email?.split('@')[0]) ||
+    'Client';
+
+  const clientContactLabel = formatClientContactLabel({
+    email: user.email,
+    phone: thread?.clientPhone,
+    address: thread?.clientAddress,
+  });
 
   const hasSavedGreetingInMessages = messages.some(
     (m) => m.senderRole === 'system' && m.text === settings.greetingMessage,
@@ -810,7 +827,7 @@ export const ClientChatView: React.FC<ClientChatViewProps> = ({
                 <p className="text-xs font-semibold text-slate-900 truncate">
                   {clientDisplayName}
                 </p>
-                <p className="text-[11px] text-slate-500 truncate">{user.email}</p>
+                <p className="text-[11px] text-slate-500 truncate">{clientContactLabel}</p>
               </div>
             </div>
             <button

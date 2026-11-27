@@ -48,6 +48,14 @@
           "type": "string",
           "maxLength": 65536
         },
+        "phone": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 200
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -83,6 +91,14 @@
         "clientPhotoURL": {
           "type": "string",
           "maxLength": 65536
+        },
+        "clientPhone": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "clientAddress": {
+          "type": "string",
+          "maxLength": 200
         },
         "lastMessageText": {
           "type": "string",

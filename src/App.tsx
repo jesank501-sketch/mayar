@@ -1,5 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  updateProfile,
+  User,
+} from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
 import {
@@ -15,6 +23,13 @@ import {
   PublicPageSettings,
   SponsoredLinksConfig,
 } from './types';
+import {
+  loadPendingPhoneDemoMeta,
+  normalizePhoneDigits,
+  PhoneDemoMeta,
+  phoneToSyntheticEmail,
+  savePendingPhoneDemoMeta,
+} from './utils/phoneAuth';
 import { LandingView } from './components/LandingView';
 import { WelcomePopup } from './components/WelcomePopup';
 import { ClientChatView } from './components/ClientChatView';
@@ -39,6 +54,11 @@ export default function App() {
   const [popupOpen, setPopupOpen] = useState(true);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  const pendingDemoMetaRef = useRef<{
+    email: string;
+    meta: PhoneDemoMeta;
+  } | null>(null);
 
   // Subscribe to public page settings
   useEffect(() => {
@@ -152,7 +172,15 @@ export default function App() {
       try {
         const adminFlag = await checkIsAdmin(nextUser);
         setIsAdmin(adminFlag);
-        const savedPhoto = await ensureUserAndThread(nextUser, adminFlag);
+
+        const pendingMatch =
+          pendingDemoMetaRef.current &&
+          pendingDemoMetaRef.current.email === nextUser.email
+            ? pendingDemoMetaRef.current.meta
+            : null;
+        const resolvedDemoMeta = pendingMatch ?? loadPendingPhoneDemoMeta(nextUser.email);
+
+        const savedPhoto = await ensureUserAndThread(nextUser, adminFlag, resolvedDemoMeta);
         setClientPhotoURL(savedPhoto);
         setProfileReady(true);
       } finally {
@@ -186,7 +214,126 @@ export default function App() {
     }
   };
 
+  const handlePhoneRegister = async (params: {
+    name: string;
+    phone: string;
+    address: string;
+    password: string;
+  }): Promise<boolean> => {
+    if (isSigningIn) return false;
+    setIsSigningIn(true);
+    setAuthError(null);
+
+    const digits = normalizePhoneDigits(params.phone);
+    const syntheticEmail = phoneToSyntheticEmail(digits);
+    const cleanName = params.name.trim();
+    const cleanAddress = params.address.trim();
+
+    const meta: PhoneDemoMeta = {
+      displayName: cleanName,
+      phone: digits,
+      address: cleanAddress,
+    };
+    pendingDemoMetaRef.current = { email: syntheticEmail, meta };
+    savePendingPhoneDemoMeta(digits, meta);
+
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, syntheticEmail, params.password);
+      try {
+        await updateProfile(cred.user, { displayName: cleanName });
+      } catch {
+        // Non-blocking: ensureUserAndThread already receives meta directly
+      }
+      return false;
+    } catch (error) {
+      pendingDemoMetaRef.current = null;
+      const code = (error as { code?: string })?.code ?? '';
+      if (code === 'auth/email-already-in-use') {
+        setAuthError(
+          lang === 'bn'
+            ? 'এই মোবাইল নম্বর দিয়ে আগেই অ্যাকাউন্ট খোলা আছে। অনুগ্রহ করে পাসওয়ার্ড দিয়ে লগইন করুন।'
+            : 'An account with this mobile number already exists. Please sign in with your password.',
+        );
+        return true;
+      }
+      if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          lang === 'bn'
+            ? 'Firebase Console থেকে Email/Password সাইন-ইন মেথড চালু (Enable) করা প্রয়োজন।'
+            : 'Email/Password sign-in needs to be enabled in Firebase Console -> Authentication -> Sign-in method.',
+        );
+        return false;
+      }
+      if (code === 'auth/weak-password') {
+        setAuthError(
+          lang === 'bn'
+            ? 'পাসওয়ার্ড আরও শক্তিশালী দিন (কমপক্ষে ৬ অক্ষর)।'
+            : 'Password is too weak. Please enter at least 6 characters.',
+        );
+        return false;
+      }
+      setAuthError(
+        lang === 'bn'
+          ? 'ডেমো অ্যাকাউন্ট তৈরি করা যায়নি। তথ্য যাচাই করে আবার চেষ্টা করুন।'
+          : 'Could not create demo account. Please check your details and try again.',
+      );
+      return false;
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const handlePhoneSignIn = async (params: {
+    phone: string;
+    password: string;
+  }): Promise<void> => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
+    setAuthError(null);
+
+    const digits = normalizePhoneDigits(params.phone);
+    const syntheticEmail = phoneToSyntheticEmail(digits);
+
+    try {
+      await signInWithEmailAndPassword(auth, syntheticEmail, params.password);
+    } catch (error) {
+      const code = (error as { code?: string })?.code ?? '';
+      if (
+        code === 'auth/invalid-credential' ||
+        code === 'auth/wrong-password' ||
+        code === 'auth/user-not-found'
+      ) {
+        setAuthError(
+          lang === 'bn'
+            ? 'মোবাইল নম্বর বা পাসওয়ার্ড সঠিক নয়। নতুন হলে "নতুন অ্যাকাউন্ট" ট্যাবে গিয়ে তৈরি করুন।'
+            : 'Incorrect mobile number or password. If you are new, switch to New Demo Account.',
+        );
+      } else if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          lang === 'bn'
+            ? 'Firebase Console থেকে Email/Password সাইন-ইন মেথড চালু (Enable) করা প্রয়োজন।'
+            : 'Email/Password sign-in needs to be enabled in Firebase Console -> Authentication -> Sign-in method.',
+        );
+      } else if (code === 'auth/too-many-requests') {
+        setAuthError(
+          lang === 'bn'
+            ? 'অনেকবার ভুল চেষ্টা হয়েছে। কিছুক্ষণ অপেক্ষা করে আবার চেষ্টা করুন।'
+            : 'Too many failed attempts. Please wait a few moments and try again.',
+        );
+      } else {
+        setAuthError(
+          lang === 'bn'
+            ? 'লগইন সম্পন্ন করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।'
+            : 'Sign-in failed. Please try again.',
+        );
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
   const handleSignOut = async () => {
+    pendingDemoMetaRef.current = null;
     await signOut(auth);
     setPopupOpen(true);
   };
@@ -266,6 +413,9 @@ export default function App() {
         isOpen={popupOpen}
         onClose={() => setPopupOpen(false)}
         onSignIn={() => void handleSignIn()}
+        onPhoneRegister={handlePhoneRegister}
+        onPhoneSignIn={handlePhoneSignIn}
+        onClearError={() => setAuthError(null)}
         isSigningIn={isSigningIn}
         authError={authError}
         settings={settings}

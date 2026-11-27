@@ -35,6 +35,11 @@ import {
 import { clampText } from '../utils/formatters';
 import { isSafeHttpsLink } from '../utils/linkRotation';
 import { isSafeAvatarUrl, isSafeMediaUrl } from '../utils/media';
+import {
+  extractPhoneFromSyntheticEmail,
+  loadPendingPhoneDemoMeta,
+  PhoneDemoMeta,
+} from '../utils/phoneAuth';
 
 export async function checkIsAdmin(user: User): Promise<boolean> {
   if (user.email === BOOTSTRAPPED_ADMIN_EMAIL && user.emailVerified) {
@@ -133,16 +138,24 @@ export async function updateAdminPresence(
 export async function ensureUserAndThread(
   user: User,
   isAdminUser: boolean,
+  demoMeta?: PhoneDemoMeta | null,
 ): Promise<string> {
   const uid = user.uid;
-  const displayName = clampText(
-    user.displayName || user.email?.split('@')[0],
+  const fallbackPhone = extractPhoneFromSyntheticEmail(user.email);
+  const storedDemoMeta = demoMeta ?? loadPendingPhoneDemoMeta(user.email);
+  const initialDisplayName = clampText(
+    storedDemoMeta?.displayName ||
+      user.displayName ||
+      (fallbackPhone ? fallbackPhone : user.email?.split('@')[0]),
     FIELD_LIMITS.DISPLAY_NAME_MAX,
     'Client User',
   );
   const email = clampText(user.email, FIELD_LIMITS.EMAIL_MAX, 'client@user.local');
   const authPhoto = clampText(user.photoURL, FIELD_LIMITS.PHOTO_URL_MAX, '');
   let activePhotoURL = isSafeAvatarUrl(authPhoto) ? authPhoto : '';
+  let finalDisplayName = initialDisplayName;
+  let finalPhone = clampText(storedDemoMeta?.phone || fallbackPhone, FIELD_LIMITS.PHONE_MAX);
+  let finalAddress = clampText(storedDemoMeta?.address, FIELD_LIMITS.ADDRESS_MAX);
 
   const userPath = `users/${uid}`;
   const userRef = doc(db, 'users', uid);
@@ -152,20 +165,40 @@ export async function ensureUserAndThread(
     if (!userSnap.exists()) {
       await setDoc(userRef, {
         uid,
-        displayName,
+        displayName: finalDisplayName,
         email,
         photoURL: activePhotoURL,
+        ...(finalPhone ? { phone: finalPhone } : {}),
+        ...(finalAddress ? { address: finalAddress } : {}),
         createdAt: serverTimestamp(),
         lastSeenAt: serverTimestamp(),
       });
     } else {
-      const existingData = userSnap.data() as { photoURL?: string };
+      const existingData = userSnap.data() as {
+        photoURL?: string;
+        displayName?: string;
+        phone?: string;
+        address?: string;
+      };
       if (existingData.photoURL && isSafeAvatarUrl(existingData.photoURL)) {
         activePhotoURL = existingData.photoURL;
       }
+      finalDisplayName = clampText(
+        storedDemoMeta?.displayName ||
+          user.displayName ||
+          existingData.displayName ||
+          (fallbackPhone ? fallbackPhone : user.email?.split('@')[0]),
+        FIELD_LIMITS.DISPLAY_NAME_MAX,
+        'Client User',
+      );
+      finalPhone = finalPhone || clampText(existingData.phone, FIELD_LIMITS.PHONE_MAX);
+      finalAddress = finalAddress || clampText(existingData.address, FIELD_LIMITS.ADDRESS_MAX);
+
       await updateDoc(userRef, {
-        displayName,
+        displayName: finalDisplayName,
         photoURL: activePhotoURL,
+        ...(finalPhone ? { phone: finalPhone } : {}),
+        ...(finalAddress ? { address: finalAddress } : {}),
         lastSeenAt: serverTimestamp(),
       });
     }
@@ -202,9 +235,11 @@ export async function ensureUserAndThread(
       const batch = writeBatch(db);
       batch.set(threadRef, {
         clientId: uid,
-        clientName: displayName,
+        clientName: finalDisplayName,
         clientEmail: email,
         clientPhotoURL: activePhotoURL,
+        ...(finalPhone ? { clientPhone: finalPhone } : {}),
+        ...(finalAddress ? { clientAddress: finalAddress } : {}),
         lastMessageText: greetingText ? clampText(greetingText, FIELD_LIMITS.THREAD_PREVIEW_MAX) : '',
         lastMessageSender: greetingText ? 'system' : 'admin',
         lastMessageAt: serverTimestamp(),
@@ -231,6 +266,26 @@ export async function ensureUserAndThread(
       }
 
       await batch.commit();
+    } else {
+      const existingThread = threadSnap.data() as {
+        clientName?: string;
+        clientPhone?: string;
+        clientAddress?: string;
+        clientPhotoURL?: string;
+      };
+      const needsContactSync =
+        (finalDisplayName && existingThread.clientName !== finalDisplayName) ||
+        (finalPhone && existingThread.clientPhone !== finalPhone) ||
+        (finalAddress && existingThread.clientAddress !== finalAddress);
+      if (needsContactSync) {
+        await updateDoc(threadRef, {
+          clientName: finalDisplayName,
+          clientPhotoURL: activePhotoURL || existingThread.clientPhotoURL || '',
+          ...(finalPhone ? { clientPhone: finalPhone } : {}),
+          ...(finalAddress ? { clientAddress: finalAddress } : {}),
+          updatedAt: serverTimestamp(),
+        });
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, threadPath);
@@ -251,8 +306,13 @@ export async function updateUserProfilePhoto(params: {
   }
 
   const cleanPhoto = photoURL.slice(0, FIELD_LIMITS.PHOTO_URL_MAX);
+  const storedDemoMeta = loadPendingPhoneDemoMeta(user.email);
+  const fallbackPhone = extractPhoneFromSyntheticEmail(user.email);
   const displayName = clampText(
-    user.displayName || user.email?.split('@')[0],
+    storedDemoMeta?.displayName ||
+      user.displayName ||
+      fallbackPhone ||
+      user.email?.split('@')[0],
     FIELD_LIMITS.DISPLAY_NAME_MAX,
     'User',
   );
@@ -320,8 +380,17 @@ export async function sendMessageAtomic(params: {
     throw new Error('Invalid media URL');
   }
 
+  const storedDemoMeta = senderRole === 'client' ? loadPendingPhoneDemoMeta(sender.email) : null;
+  const fallbackPhone =
+    senderRole === 'client' ? extractPhoneFromSyntheticEmail(sender.email) : '';
+  const senderPhone = clampText(storedDemoMeta?.phone || fallbackPhone, FIELD_LIMITS.PHONE_MAX);
+  const senderAddress = clampText(storedDemoMeta?.address, FIELD_LIMITS.ADDRESS_MAX);
+
   const senderName = clampText(
-    senderNameOverride || sender.displayName || sender.email?.split('@')[0],
+    senderNameOverride ||
+      sender.displayName ||
+      storedDemoMeta?.displayName ||
+      (fallbackPhone ? fallbackPhone : sender.email?.split('@')[0]),
     FIELD_LIMITS.DISPLAY_NAME_MAX,
     senderRole === 'admin' ? 'Admin' : 'Client',
   );
@@ -363,6 +432,8 @@ export async function sendMessageAtomic(params: {
       clientName: senderName,
       clientEmail: email,
       clientPhotoURL: resolvedPhoto,
+      ...(senderPhone ? { clientPhone: senderPhone } : {}),
+      ...(senderAddress ? { clientAddress: senderAddress } : {}),
       lastMessageText: previewText,
       lastMessageSender: senderRole,
       lastMessageAt: serverTimestamp(),

@@ -185,6 +185,13 @@ interface VerifiedCaller {
   emailVerified: boolean;
 }
 
+const SYNTHETIC_PHONE_EMAIL_REGEX = /^[0-9]{6,15}@phone\.bartaconnect\.local$/i;
+
+function isAllowedClientCaller(caller: VerifiedCaller | null): caller is VerifiedCaller {
+  if (!caller) return false;
+  return caller.emailVerified || SYNTHETIC_PHONE_EMAIL_REGEX.test(caller.email);
+}
+
 async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedCaller | null> {
   if (!idToken || idToken.length > 4096) return null;
   try {
@@ -594,7 +601,7 @@ async function startServer(): Promise<void> {
         const authHeader = req.headers.authorization ?? '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const caller = await verifyFirebaseIdToken(token);
-        if (!caller || !caller.emailVerified) {
+        if (!isAllowedClientCaller(caller)) {
           res.status(401).json({ error: 'Authentication required' });
           return;
         }
@@ -852,7 +859,7 @@ async function startServer(): Promise<void> {
         const authHeader = req.headers.authorization ?? '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const caller = await verifyFirebaseIdToken(token);
-        if (!caller || !caller.emailVerified) {
+        if (!isAllowedClientCaller(caller)) {
           res.status(401).json({ error: 'Authentication required' });
           return;
         }
@@ -886,7 +893,7 @@ async function startServer(): Promise<void> {
         const authHeader = req.headers.authorization ?? '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const caller = await verifyFirebaseIdToken(token);
-        if (!caller || !caller.emailVerified) {
+        if (!isAllowedClientCaller(caller)) {
           res.status(401).json({ error: 'Authentication required' });
           return;
         }

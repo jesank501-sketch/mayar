@@ -13,6 +13,8 @@ export interface UserProfile {
   displayName: string;
   email: string;
   photoURL: string;
+  phone?: string;
+  address?: string;
   createdAt: Timestamp;
   lastSeenAt: Timestamp;
 }
@@ -23,6 +25,8 @@ export interface ChatThread {
   clientName: string;
   clientEmail: string;
   clientPhotoURL: string;
+  clientPhone?: string;
+  clientAddress?: string;
   lastMessageText: string;
   lastMessageSender: SenderRole;
   lastMessageAt: Timestamp;
@@ -131,6 +135,8 @@ export const DEFAULT_PAGE_SETTINGS: PublicPageSettings = {
 export const FIELD_LIMITS = {
   DISPLAY_NAME_MAX: 100,
   EMAIL_MAX: 150,
+  PHONE_MAX: 20,
+  ADDRESS_MAX: 200,
   PHOTO_URL_MAX: 65536,
   MESSAGE_TEXT_MAX: 2000,
   MEDIA_URL_MAX: 900000,

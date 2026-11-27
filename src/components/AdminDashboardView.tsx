@@ -69,6 +69,7 @@ import {
   isSafeHttpsLink,
   resolveActiveLinkForUser,
 } from '../utils/linkRotation';
+import { formatClientContactLabel, isSyntheticPhoneEmail } from '../utils/phoneAuth';
 import {
   dispatchAdminPushNotification,
   enableAndSubscribePushNotifications,
@@ -513,7 +514,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (!term) return true;
       return (
         t.clientName.toLowerCase().includes(term) ||
-        t.clientEmail.toLowerCase().includes(term) ||
+        (!isSyntheticPhoneEmail(t.clientEmail) &&
+          t.clientEmail.toLowerCase().includes(term)) ||
+        (t.clientPhone ?? '').toLowerCase().includes(term) ||
+        (t.clientAddress ?? '').toLowerCase().includes(term) ||
         t.lastMessageText.toLowerCase().includes(term)
       );
     });
@@ -783,7 +787,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     return threads.filter(
       (t) =>
         t.clientName.toLowerCase().includes(term) ||
-        t.clientEmail.toLowerCase().includes(term) ||
+        (!isSyntheticPhoneEmail(t.clientEmail) &&
+          t.clientEmail.toLowerCase().includes(term)) ||
+        (t.clientPhone ?? '').toLowerCase().includes(term) ||
+        (t.clientAddress ?? '').toLowerCase().includes(term) ||
         t.clientId.toLowerCase().includes(term),
     );
   }, [threads, linkReviewSearch]);
@@ -1090,7 +1097,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={
-                    lang === 'bn' ? 'নাম বা ইমেইল দিয়ে খুঁজুন...' : 'Search name or email...'
+                    lang === 'bn'
+                      ? 'নাম, মোবাইল, ঠিকানা বা মেসেজ খুঁজুন...'
+                      : 'Search name, phone, address, or email...'
                   }
                   className="w-full min-h-[42px] pl-9 pr-3 py-2 text-base sm:text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 focus:outline-none"
                 />
@@ -1175,6 +1184,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 {formatRelativeTime(t.lastMessageAt, lang)}
                               </span>
                             </div>
+                            {(t.clientPhone || t.clientAddress) && (
+                              <p className="text-[11px] text-slate-500 truncate">
+                                {[t.clientPhone, t.clientAddress].filter(Boolean).join(' · ')}
+                              </p>
+                            )}
                             <div className="flex items-center justify-between gap-2 mt-0.5">
                               <p
                                 className={`text-xs truncate ${
@@ -1298,7 +1312,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       </h2>
                       <p className="text-xs text-slate-500 truncate flex items-center gap-1.5">
                         <span className="truncate">
-                          {selectedThread.clientEmail} ·{' '}
+                          {formatClientContactLabel({
+                            email: selectedThread.clientEmail,
+                            phone: selectedThread.clientPhone,
+                            address: selectedThread.clientAddress,
+                          })}{' '}
+                          ·{' '}
                           {selectedThread.status === 'resolved'
                             ? lang === 'bn'
                               ? 'সমাধানকৃত'
@@ -2167,7 +2186,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 {t.clientName}
                               </p>
                               <p className="text-xs text-slate-500 truncate">
-                                {t.clientEmail}
+                                {formatClientContactLabel({
+                                  email: t.clientEmail,
+                                  phone: t.clientPhone,
+                                  address: t.clientAddress,
+                                })}
                               </p>
                               <p className="text-[11px] font-mono text-slate-500 truncate mt-0.5">
                                 ID: {t.clientId}

@@ -31,6 +31,7 @@ service cloud.firestore {
         || (url.size() <= 1000 && url.matches('^/api/media/[a-zA-Z0-9_\\-]+/[a-zA-Z0-9_\\-]+\\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif|aac|amr|3gp)$'))
         || url.matches('^data:image/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$')
         || url.matches('^data:audio/(webm|mp4|mpeg|mp3|ogg|wav|x-wav|aac|x-m4a|3gpp);base64,[A-Za-z0-9+/=]+$')
+        || url.matches('^data:video/(mp4|webm|quicktime|3gpp);base64,[A-Za-z0-9+/=]+$')
       );
     }
 

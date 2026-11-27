@@ -4,7 +4,7 @@ const SAFE_AVATAR_REGEX =
   /^(https:\/\/.*|\/src\/assets\/.*|data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+)$/;
 
 const SAFE_MEDIA_REGEX =
-  /^(https:\/\/.*|\/api\/media\/[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif|aac|amr|3gp)|data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+|data:audio\/(webm|mp4|mpeg|mp3|ogg|wav|x-wav|aac|x-m4a|3gpp);base64,[A-Za-z0-9+/=]+)$/;
+  /^(https:\/\/.*|\/api\/media\/[a-zA-Z0-9_\-]+\/[a-zA-Z0-9_\-]+\.(mp4|webm|mov|mp3|wav|ogg|m4a|jpg|jpeg|png|webp|gif|aac|amr|3gp)|data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+|data:audio\/(webm|mp4|mpeg|mp3|ogg|wav|x-wav|aac|x-m4a|3gpp);base64,[A-Za-z0-9+/=]+|data:video\/(mp4|webm|quicktime|3gpp);base64,[A-Za-z0-9+/=]+)$/;
 
 export function isSafeAvatarUrl(url: string): boolean {
   if (!url) return true;
@@ -43,8 +43,14 @@ export function extractYouTubeEmbedUrl(url: string): string | null {
   }
 }
 
-export function inferMediaMimeType(file: File): string {
-  if (file.type) return file.type.split(';')[0].trim().toLowerCase();
+export function inferMediaMimeType(
+  file: File,
+  fallbackKind?: 'image' | 'video' | 'audio',
+): string {
+  const rawType = file.type ? file.type.split(';')[0].trim().toLowerCase() : '';
+  if (rawType && rawType !== 'application/octet-stream') {
+    return rawType;
+  }
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
   switch (ext) {
     case 'jpg':
@@ -66,12 +72,20 @@ export function inferMediaMimeType(file: File): string {
       return 'image/bmp';
     case 'mp4':
     case 'm4v':
+    case 'mpeg':
+    case 'mpg':
+    case 'ts':
+    case 'mts':
+    case 'avi':
+    case 'flv':
       return 'video/mp4';
     case 'webm':
+    case 'ogv':
       return 'video/webm';
     case 'mov':
       return 'video/quicktime';
     case '3gp':
+    case '3g2':
       return 'video/3gpp';
     case 'mkv':
       return 'video/x-matroska';
@@ -89,6 +103,8 @@ export function inferMediaMimeType(file: File): string {
     case 'amr':
       return 'audio/amr';
     default:
+      if (fallbackKind === 'video') return 'video/mp4';
+      if (fallbackKind === 'audio') return 'audio/mpeg';
       return '';
   }
 }
@@ -378,9 +394,10 @@ export async function uploadMediaFile(params: {
   mimeType: string;
   threadId: string;
   user: User;
+  mediaKind?: 'image' | 'video' | 'audio';
 }): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; mimeType: string }> {
   const token = await params.user.getIdToken();
-  const baseMime = params.mimeType.split(';')[0].trim().toLowerCase();
+  const baseMime = params.mimeType.split(';')[0].trim().toLowerCase() || 'application/octet-stream';
 
   const resp = await fetch('/api/media/upload', {
     method: 'POST',
@@ -388,6 +405,7 @@ export async function uploadMediaFile(params: {
       Authorization: `Bearer ${token}`,
       'Content-Type': baseMime,
       'X-Media-Mime': baseMime,
+      ...(params.mediaKind ? { 'X-Media-Kind': params.mediaKind } : {}),
       'X-Thread-Id': params.threadId,
     },
     body: params.file,
@@ -398,6 +416,129 @@ export async function uploadMediaFile(params: {
     mediaType: 'image' | 'video' | 'audio';
     mimeType: string;
   }>(resp, 'Media upload failed');
+}
+
+function normalizeVideoMimeForDataUrl(rawMime: string): string {
+  const base = rawMime.split(';')[0].trim().toLowerCase();
+  if (base === 'video/webm' || base === 'video/ogg') return 'video/webm';
+  if (base === 'video/quicktime') return 'video/quicktime';
+  if (base === 'video/3gpp' || base === 'video/3gpp2') return 'video/3gpp';
+  return 'video/mp4';
+}
+
+function generateUploadId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/[^a-zA-Z0-9_-]/g, '');
+  }
+  return `vid_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const VIDEO_CHUNK_BYTES = 3.5 * 1024 * 1024;
+
+export async function uploadChatVideoWithFallback(params: {
+  file: File;
+  mimeType: string;
+  threadId: string;
+  user: User;
+  onProgress?: (percent: number) => void;
+}): Promise<{ url: string; mediaType: 'video'; mimeType: string }> {
+  const cleanMime = (
+    params.mimeType || inferMediaMimeType(params.file, 'video') || 'video/mp4'
+  )
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+
+  try {
+    if (params.file.size <= VIDEO_CHUNK_BYTES) {
+      params.onProgress?.(25);
+      const uploaded = await uploadMediaFile({
+        file: params.file,
+        mimeType: cleanMime,
+        threadId: params.threadId,
+        user: params.user,
+        mediaKind: 'video',
+      });
+      params.onProgress?.(100);
+      if (uploaded.url && isSafeMediaUrl(uploaded.url)) {
+        return {
+          url: uploaded.url,
+          mediaType: 'video',
+          mimeType: uploaded.mimeType,
+        };
+      }
+    } else {
+      const totalChunks = Math.ceil(params.file.size / VIDEO_CHUNK_BYTES);
+      const uploadId = generateUploadId();
+      const token = await params.user.getIdToken();
+
+      for (let idx = 0; idx < totalChunks; idx += 1) {
+        const start = idx * VIDEO_CHUNK_BYTES;
+        const end = Math.min(params.file.size, start + VIDEO_CHUNK_BYTES);
+        const chunkBlob = params.file.slice(start, end);
+
+        const resp = await fetch('/api/media/upload-chunk', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/octet-stream',
+            'X-Media-Mime': cleanMime,
+            'X-Media-Kind': 'video',
+            'X-Thread-Id': params.threadId,
+            'X-Upload-Id': uploadId,
+            'X-Chunk-Index': String(idx),
+            'X-Total-Chunks': String(totalChunks),
+          },
+          body: chunkBlob,
+        });
+
+        const parsed = await safeParseApiJson<{
+          ok: boolean;
+          complete?: boolean;
+          url?: string;
+          mimeType?: string;
+        }>(resp, 'ভিডিও আপলোড ব্যর্থ হয়েছে।');
+
+        params.onProgress?.(Math.min(99, Math.round(((idx + 1) / totalChunks) * 100)));
+
+        if (parsed.complete && parsed.url && isSafeMediaUrl(parsed.url)) {
+          params.onProgress?.(100);
+          return {
+            url: parsed.url,
+            mediaType: 'video',
+            mimeType: parsed.mimeType || cleanMime,
+          };
+        }
+      }
+      throw new Error('ভিডিও আপলোড সম্পন্ন হয়নি। অনুগ্রহ করে আবার চেষ্টা করুন।');
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    const isBackendMissing =
+      msg.includes('BACKEND_HTML_RESPONSE') ||
+      msg.includes('Failed to fetch') ||
+      msg.includes('Load failed') ||
+      msg.includes('NetworkError');
+
+    if (isBackendMissing && params.file.size <= 640 * 1024) {
+      const normalized = normalizeVideoMimeForDataUrl(cleanMime);
+      const rawDataUrl = await readBlobAsDataUrl(new Blob([params.file], { type: normalized }));
+      const commaIdx = rawDataUrl.indexOf(',');
+      if (commaIdx >= 0) {
+        const formatted = `data:${normalized};base64,${rawDataUrl.slice(commaIdx + 1)}`;
+        if (isSafeMediaUrl(formatted)) {
+          return {
+            url: formatted,
+            mediaType: 'video',
+            mimeType: normalized,
+          };
+        }
+      }
+    }
+    throw err;
+  }
+
+  throw new Error('ভিডিও আপলোড ব্যর্থ হয়েছে।');
 }
 
 export async function uploadChatPhotoWithFallback(params: {
@@ -413,6 +554,7 @@ export async function uploadChatPhotoWithFallback(params: {
       mimeType: compressed.mimeType,
       threadId: params.threadId,
       user: params.user,
+      mediaKind: 'image',
     });
     if (uploaded.url && isSafeMediaUrl(uploaded.url)) {
       return {
@@ -450,6 +592,7 @@ export async function uploadAudioWithFallback(params: {
       mimeType: cleanMime,
       threadId: params.threadId,
       user: params.user,
+      mediaKind: 'audio',
     });
     if (uploaded.url && isSafeMediaUrl(uploaded.url)) {
       return {

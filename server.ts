@@ -127,10 +127,18 @@ const MIME_MAP: Record<
   'image/heic': { ext: 'jpg', kind: 'image', contentType: 'image/heic' },
   'image/heif': { ext: 'jpg', kind: 'image', contentType: 'image/heif' },
   'video/mp4': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/x-m4v': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'video/webm': { ext: 'webm', kind: 'video', contentType: 'video/webm' },
   'video/quicktime': { ext: 'mov', kind: 'video', contentType: 'video/quicktime' },
   'video/3gpp': { ext: '3gp', kind: 'video', contentType: 'video/3gpp' },
+  'video/3gpp2': { ext: '3gp', kind: 'video', contentType: 'video/3gpp' },
   'video/x-matroska': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/mpeg': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/mp2t': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/ogg': { ext: 'webm', kind: 'video', contentType: 'video/webm' },
+  'video/avi': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/x-msvideo': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
+  'video/x-flv': { ext: 'mp4', kind: 'video', contentType: 'video/mp4' },
   'audio/webm': { ext: 'webm', kind: 'audio', contentType: 'audio/webm' },
   'audio/mp4': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
   'audio/x-m4a': { ext: 'm4a', kind: 'audio', contentType: 'audio/mp4' },
@@ -158,7 +166,25 @@ function resolveRequestedMime(req: Pick<IncomingMessage, 'headers'>): string {
     .split(';')[0]
     .trim()
     .toLowerCase();
-  return fallbackMime in MIME_MAP ? fallbackMime : headerMime;
+  if (fallbackMime in MIME_MAP) return fallbackMime;
+  return fallbackMime || headerMime;
+}
+
+function resolveMediaMimeInfo(
+  req: Pick<IncomingMessage, 'headers'>,
+): { ext: string; kind: 'image' | 'video' | 'audio'; contentType: string } | null {
+  const baseMime = resolveRequestedMime(req);
+  if (baseMime in MIME_MAP) {
+    return MIME_MAP[baseMime];
+  }
+  if (baseMime.startsWith('video/')) {
+    return { ext: 'mp4', kind: 'video', contentType: 'video/mp4' };
+  }
+  const hintedKind = String(req.headers['x-media-kind'] ?? '').trim().toLowerCase();
+  if (hintedKind === 'video' && (!baseMime || baseMime === 'application/octet-stream')) {
+    return { ext: 'mp4', kind: 'video', contentType: 'video/mp4' };
+  }
+  return null;
 }
 
 const EXT_TO_CONTENT_TYPE: Record<string, string> = {
@@ -587,14 +613,33 @@ async function startServer(): Promise<void> {
     res.json({ ok: true });
   });
 
+  const CHUNK_ROOT = path.resolve(UPLOAD_ROOT, '_chunks');
+  fs.mkdirSync(CHUNK_ROOT, { recursive: true });
+
+  const cleanupStaleChunkDirs = async () => {
+    try {
+      const entries = await fs.promises.readdir(CHUNK_ROOT, { withFileTypes: true });
+      const cutoff = Date.now() - 30 * 60 * 1000;
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const dirPath = path.resolve(CHUNK_ROOT, entry.name);
+        if (!dirPath.startsWith(CHUNK_ROOT + path.sep)) continue;
+        const stat = await fs.promises.stat(dirPath);
+        if (stat.mtimeMs < cutoff) {
+          await fs.promises.rm(dirPath, { recursive: true, force: true });
+        }
+      }
+    } catch {
+      // Non-blocking cleanup
+    }
+  };
+  void cleanupStaleChunkDirs();
+
   app.post(
     '/api/media/upload',
     express.raw({
-      limit: '26mb',
-      type: (req) => {
-        const raw = resolveRequestedMime(req);
-        return raw in MIME_MAP;
-      },
+      limit: '30mb',
+      type: (req) => Boolean(resolveMediaMimeInfo(req)),
     }),
     async (req: Request, res: Response) => {
       try {
@@ -623,8 +668,7 @@ async function startServer(): Promise<void> {
           return;
         }
 
-        const baseMime = resolveRequestedMime(req);
-        const mimeInfo = MIME_MAP[baseMime];
+        const mimeInfo = resolveMediaMimeInfo(req);
         if (!mimeInfo) {
           res.status(415).json({ error: 'Unsupported media format' });
           return;
@@ -637,7 +681,7 @@ async function startServer(): Promise<void> {
 
         const maxBytes =
           mimeInfo.kind === 'video'
-            ? 25 * 1024 * 1024
+            ? 29 * 1024 * 1024
             : mimeInfo.kind === 'audio'
               ? 15 * 1024 * 1024
               : 10 * 1024 * 1024;
@@ -671,6 +715,149 @@ async function startServer(): Promise<void> {
       } catch (err) {
         console.error('Media upload failed:', err);
         res.status(500).json({ error: 'Upload failed' });
+      }
+    },
+  );
+
+  // Chunked media upload (supports large videos up to 80 MB without hitting 32 MB HTTP proxy request caps)
+  app.post(
+    '/api/media/upload-chunk',
+    express.raw({
+      limit: '6mb',
+      type: () => true,
+    }),
+    async (req: Request, res: Response) => {
+      try {
+        const authHeader = req.headers.authorization ?? '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const caller = await verifyFirebaseIdToken(token);
+        if (!isAllowedClientCaller(caller)) {
+          res.status(401).json({ error: 'Authentication required' });
+          return;
+        }
+
+        const threadId = String(req.headers['x-thread-id'] ?? '').trim();
+        const uploadId = String(req.headers['x-upload-id'] ?? '').trim();
+        const chunkIndex = Number.parseInt(String(req.headers['x-chunk-index'] ?? ''), 10);
+        const totalChunks = Number.parseInt(String(req.headers['x-total-chunks'] ?? ''), 10);
+
+        if (!SAFE_ID_REGEX.test(threadId) || !SAFE_ID_REGEX.test(uploadId)) {
+          res.status(400).json({ error: 'Invalid upload or thread identifier' });
+          return;
+        }
+        if (
+          !Number.isInteger(totalChunks) ||
+          totalChunks < 1 ||
+          totalChunks > 24 ||
+          !Number.isInteger(chunkIndex) ||
+          chunkIndex < 0 ||
+          chunkIndex >= totalChunks
+        ) {
+          res.status(400).json({ error: 'Invalid chunk indices' });
+          return;
+        }
+
+        const isOwner = threadId === caller.uid;
+        const isBootstrappedAdmin =
+          caller.email === BOOTSTRAPPED_ADMIN_EMAIL && caller.emailVerified;
+        const isAllowedAdmin =
+          isBootstrappedAdmin || (await checkAdminDocWithToken(caller.uid, token));
+        if (!isOwner && !isAllowedAdmin) {
+          res.status(403).json({ error: 'Not authorized to upload to this thread' });
+          return;
+        }
+
+        const mimeInfo = resolveMediaMimeInfo(req);
+        if (!mimeInfo) {
+          res.status(415).json({ error: 'Unsupported media format' });
+          return;
+        }
+
+        if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+          res.status(400).json({ error: 'Empty chunk payload' });
+          return;
+        }
+        if (req.body.length > 5 * 1024 * 1024) {
+          res.status(413).json({ error: 'Chunk exceeds 5 MB limit' });
+          return;
+        }
+
+        const chunkDir = path.resolve(CHUNK_ROOT, `${caller.uid}_${uploadId}`);
+        if (!chunkDir.startsWith(CHUNK_ROOT + path.sep)) {
+          res.status(400).json({ error: 'Invalid upload path' });
+          return;
+        }
+        await fs.promises.mkdir(chunkDir, { recursive: true });
+
+        const chunkPath = path.resolve(chunkDir, `${chunkIndex}.part`);
+        if (!chunkPath.startsWith(chunkDir + path.sep)) {
+          res.status(400).json({ error: 'Invalid chunk path' });
+          return;
+        }
+        await fs.promises.writeFile(chunkPath, req.body);
+
+        if (chunkIndex < totalChunks - 1) {
+          res.status(200).json({ ok: true, complete: false, chunkIndex });
+          return;
+        }
+
+        // Verify all chunks exist and assemble sequentially
+        let totalSize = 0;
+        const chunkPaths: string[] = [];
+        for (let i = 0; i < totalChunks; i += 1) {
+          const p = path.resolve(chunkDir, `${i}.part`);
+          const st = await fs.promises.stat(p).catch(() => null);
+          if (!st || !st.isFile()) {
+            res.status(400).json({ error: `Missing upload chunk ${i}` });
+            return;
+          }
+          totalSize += st.size;
+          chunkPaths.push(p);
+        }
+
+        const maxTotalBytes = 80 * 1024 * 1024;
+        if (totalSize > maxTotalBytes) {
+          await fs.promises.rm(chunkDir, { recursive: true, force: true });
+          res.status(413).json({ error: 'File exceeds 80 MB maximum allowed size' });
+          return;
+        }
+
+        const threadDir = path.resolve(UPLOAD_ROOT, threadId);
+        if (!threadDir.startsWith(UPLOAD_ROOT + path.sep)) {
+          res.status(400).json({ error: 'Invalid storage path' });
+          return;
+        }
+        await fs.promises.mkdir(threadDir, { recursive: true });
+
+        const fileName = `${crypto.randomUUID()}.${mimeInfo.ext}`;
+        const destPath = path.resolve(threadDir, fileName);
+        if (!destPath.startsWith(threadDir + path.sep)) {
+          res.status(400).json({ error: 'Invalid file destination' });
+          return;
+        }
+
+        const handle = await fs.promises.open(destPath, 'w');
+        try {
+          for (const cp of chunkPaths) {
+            const buf = await fs.promises.readFile(cp);
+            await handle.write(buf);
+          }
+        } finally {
+          await handle.close();
+          await fs.promises.rm(chunkDir, { recursive: true, force: true }).catch(() => {});
+        }
+
+        res.status(201).json({
+          ok: true,
+          complete: true,
+          url: `/api/media/${threadId}/${fileName}`,
+          mediaType: mimeInfo.kind,
+          mimeType: mimeInfo.contentType,
+          sizeBytes: totalSize,
+        });
+      } catch (err) {
+        console.error('Chunked media upload failed:', err);
+        res.status(500).json({ error: 'Video upload failed' });
       }
     },
   );

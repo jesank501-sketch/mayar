@@ -27,7 +27,7 @@ import {
   isSafeMediaUrl,
   uploadAudioWithFallback,
   uploadChatPhotoWithFallback,
-  uploadMediaFile,
+  uploadChatVideoWithFallback,
 } from '../utils/media';
 
 export interface SponsoredGateProps {
@@ -158,6 +158,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
   const cancelledRecordRef = useRef(false);
 
   const picVideoInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -456,7 +457,10 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     }
   };
 
-  const handlePicOrVideoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePicOrVideoSelected = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    forcedKind?: 'image' | 'video',
+  ) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
@@ -465,9 +469,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       return;
     }
 
-    const mime = inferMediaMimeType(file);
-    const isVideo = mime.startsWith('video/');
-    const isImage = mime.startsWith('image/') || (!mime && !isVideo);
+    const mime = inferMediaMimeType(file, forcedKind);
+    const isVideo = forcedKind === 'video' || mime.startsWith('video/');
+    const isImage = !isVideo && (forcedKind === 'image' || mime.startsWith('image/') || !mime);
 
     if (!isImage && !isVideo) {
       setErrorMsg(
@@ -478,15 +482,15 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       return;
     }
 
-    const maxBytes = isVideo ? 25 * 1024 * 1024 : 15 * 1024 * 1024;
+    const maxBytes = isVideo ? 80 * 1024 * 1024 : 15 * 1024 * 1024;
     if (file.size > maxBytes) {
       setErrorMsg(
         lang === 'bn'
           ? isVideo
-            ? 'ভিডিও ফাইল সর্বোচ্চ ২৫ মেগাবাইট হতে পারবে।'
+            ? 'ভিডিও ফাইল সর্বোচ্চ ৮০ মেগাবাইট হতে পারবে।'
             : 'ছবি ফাইল সর্বোচ্চ ১৫ মেগাবাইট হতে পারবে।'
           : isVideo
-            ? 'Video file must be under 25 MB.'
+            ? 'Video file must be under 80 MB.'
             : 'Image file must be under 15 MB.',
       );
       return;
@@ -518,14 +522,21 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
         });
         setDraft('');
       } else {
-        const uploaded = await uploadMediaFile({
+        const uploaded = await uploadChatVideoWithFallback({
           file,
-          mimeType: mime,
+          mimeType: mime || 'video/mp4',
           threadId,
           user,
+          onProgress: (pct) => {
+            setUploadingLabel(
+              lang === 'bn'
+                ? `ভিডিও আপলোড হচ্ছে... ${pct}%`
+                : `Uploading video... ${pct}%`,
+            );
+          },
         });
         await dispatchWithReply({
-          messageType: uploaded.mediaType,
+          messageType: 'video',
           text: draft.trim(),
           mediaUrl: uploaded.url,
           mediaMimeType: uploaded.mimeType,
@@ -536,8 +547,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
       if (isVideo && isBackendUnavailableError(err)) {
         setErrorMsg(
           lang === 'bn'
-            ? 'সরাসরি বড় ভিডিও আপলোড শুধু ফুল-স্ট্যাক সার্ভারে চলে। "লিংক" বাটন থেকে https:// ভিডিও বা YouTube লিংক শেয়ার করুন।'
-            : 'Direct large video uploads require the Node backend. Share an https:// or YouTube URL via Media Link instead.',
+            ? 'এই স্ট্যাটিক হোস্টিংয়ে ৬৪০ KB-এর বড় ভিডিও সরাসরি আপলোড হয় না। "লিংক" বাটন থেকে https:// ভিডিও বা YouTube লিংক শেয়ার করুন।'
+            : 'Large videos require the backend server. Share an https:// or YouTube URL via Media Link instead.',
         );
       } else {
         setErrorMsg(
@@ -1051,13 +1062,24 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
                 type="button"
                 onClick={() => picVideoInputRef.current?.click()}
                 disabled={Boolean(uploadingLabel)}
-                title={lang === 'bn' ? 'ছবি বা ভিডিও পাঠান' : 'Send Photo or Video'}
-                aria-label={lang === 'bn' ? 'ছবি বা ভিডিও পাঠান' : 'Send Photo or Video'}
+                title={lang === 'bn' ? 'ছবি পাঠান' : 'Send Photo'}
+                aria-label={lang === 'bn' ? 'ছবি পাঠান' : 'Send Photo'}
                 className="min-h-[40px] px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 active:scale-95 transition-colors cursor-pointer shrink-0"
               >
                 <ImageIcon className="w-4 h-4 text-blue-600 shrink-0" />
                 <span>{lang === 'bn' ? 'ছবি' : 'Photo'}</span>
-                <Film className="hidden sm:inline w-3.5 h-3.5 text-slate-500 shrink-0" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => videoInputRef.current?.click()}
+                disabled={Boolean(uploadingLabel)}
+                title={lang === 'bn' ? 'ভিডিও পাঠান (৮০ মেগাবাইট পর্যন্ত)' : 'Send Video (up to 80 MB)'}
+                aria-label={lang === 'bn' ? 'ভিডিও পাঠান' : 'Send Video'}
+                className="min-h-[40px] px-3 rounded-xl inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 active:scale-95 transition-colors cursor-pointer shrink-0"
+              >
+                <Film className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>{lang === 'bn' ? 'ভিডিও' : 'Video'}</span>
               </button>
 
               <button
@@ -1187,13 +1209,20 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
           </form>
         )}
 
-        {/* Unified Photo & Video File Picker */}
+        {/* Dedicated Photo & Video File Pickers */}
         <input
           ref={picVideoInputRef}
           type="file"
-          accept="image/*,video/*"
+          accept="image/*"
           className="hidden"
-          onChange={(e) => void handlePicOrVideoSelected(e)}
+          onChange={(e) => void handlePicOrVideoSelected(e, 'image')}
+        />
+        <input
+          ref={videoInputRef}
+          type="file"
+          accept="video/*,.mp4,.mov,.webm,.m4v,.3gp,.mkv"
+          className="hidden"
+          onChange={(e) => void handlePicOrVideoSelected(e, 'video')}
         />
         <input
           ref={audioInputRef}
